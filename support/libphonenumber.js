@@ -31,8 +31,8 @@ var CLOSURE_NO_DEPS = true;
 
 
 /**
- * @define {boolean} Overridden to true by the compiler when --closure_pass
- *     or --mark_as_compiled is specified.
+ * @define {boolean} Overridden to true by the compiler when
+ *     --process_closure_primitives is specified.
  */
 var COMPILED = false;
 
@@ -150,7 +150,7 @@ goog.exportPath_ = function(name, opt_object, opt_objectToExportTo) {
 
 
 /**
- * Defines a named value. In uncompiled mode, the value is retreived from
+ * Defines a named value. In uncompiled mode, the value is retrieved from
  * CLOSURE_DEFINES or CLOSURE_UNCOMPILED_DEFINES if the object is defined and
  * has the property specified, and otherwise used the defined defaultValue.
  * When compiled the default can be overridden using the compiler
@@ -184,7 +184,7 @@ goog.define = function(name, defaultValue) {
  * because they are generally used for debugging purposes and it is difficult
  * for the JSCompiler to statically determine whether they are used.
  */
-goog.DEBUG = true;
+goog.define('goog.DEBUG', true);
 
 
 /**
@@ -239,6 +239,13 @@ goog.define('goog.STRICT_MODE_COMPATIBLE', false);
  *     be disallowed in the compilation unit.
  */
 goog.define('goog.DISALLOW_TEST_ONLY_CODE', COMPILED && !goog.DEBUG);
+
+
+/**
+ * @define {boolean} Whether to use a Chrome app CSP-compliant method for
+ *     loading scripts via goog.require. @see appendScriptSrcNode_.
+ */
+goog.define('goog.ENABLE_CHROME_APP_SAFE_SCRIPT_LOADING', false);
 
 
 /**
@@ -301,7 +308,7 @@ goog.constructNamespace_ = function(name, opt_obj) {
 
 /**
  * Module identifier validation regexp.
- * Note: This is a conservative check, it is very possible to be more lienent,
+ * Note: This is a conservative check, it is very possible to be more lenient,
  *   the primary exclusion here is "/" and "\" and a leading ".", these
  *   restrictions are intended to leave the door open for using goog.require
  *   with relative file paths rather than module identifiers.
@@ -401,10 +408,7 @@ goog.module.getInternal_ = function(name) {
 
 
 /**
- * @private {?{
- *   moduleName: (string|undefined),
- *   declareTestMethods: boolean
- * }}
+ * @private {?{moduleName: (string|undefined), declareLegacyNamespace:boolean}}
  */
 goog.moduleLoaderState_ = null;
 
@@ -415,25 +419,6 @@ goog.moduleLoaderState_ = null;
  */
 goog.isInModuleLoader_ = function() {
   return goog.moduleLoaderState_ != null;
-};
-
-
-/**
- * Indicate that a module's exports that are known test methods should
- * be copied to the global object.  This makes the test methods visible to
- * test runners that inspect the global object.
- *
- * TODO(johnlenz): Make the test framework aware of goog.module so
- * that this isn't necessary. Alternately combine this with goog.setTestOnly
- * to minimize boiler plate.
- * @suppress {missingProvide}
- */
-goog.module.declareTestMethods = function() {
-  if (!goog.isInModuleLoader_()) {
-    throw new Error('goog.module.declareTestMethods must be called from ' +
-        'within a goog.module');
-  }
-  goog.moduleLoaderState_.declareTestMethods = true;
 };
 
 
@@ -493,6 +478,16 @@ goog.setTestOnly = function(opt_message) {
  *     "goog.package.part".
  */
 goog.forwardDeclare = function(name) {};
+
+
+/**
+ * Forward declare type information. Used to assign types to goog.global
+ * referenced object that would otherwise result in unknown type references
+ * and thus block property disambiguation.
+ */
+goog.forwardDeclare('Document');
+goog.forwardDeclare('HTMLScriptElement');
+goog.forwardDeclare('XMLHttpRequest');
 
 
 if (!COMPILED) {
@@ -644,7 +639,8 @@ goog.logToConsole_ = function(msg) {
 /**
  * Implements a system for the dynamic resolution of dependencies that works in
  * parallel with the BUILD system. Note that all calls to goog.require will be
- * stripped by the JSCompiler when the --closure_pass option is used.
+ * stripped by the JSCompiler when the --process_closure_primitives option is
+ * used.
  * @see goog.provide
  * @param {string} name Namespace to include (as was given in goog.provide()) in
  *     the form "goog.package.part".
@@ -652,7 +648,6 @@ goog.logToConsole_ = function(msg) {
  *     module otherwise null.
  */
 goog.require = function(name) {
-
   // If the object already exists we do not need do do anything.
   if (!COMPILED) {
     if (goog.ENABLE_DEBUG_LOADER && goog.IS_OLD_IE_) {
@@ -670,8 +665,7 @@ goog.require = function(name) {
     if (goog.ENABLE_DEBUG_LOADER) {
       var path = goog.getPathFromDeps_(name);
       if (path) {
-        goog.included_[path] = true;
-        goog.writeScripts_();
+        goog.writeScripts_(path);
         return null;
       }
     }
@@ -726,20 +720,6 @@ goog.nullFunction = function() {};
 
 
 /**
- * The identity function. Returns its first argument.
- *
- * @param {*=} opt_returnValue The single value that will be returned.
- * @param {...*} var_args Optional trailing arguments. These are ignored.
- * @return {?} The first argument. We can't know the type -- just pass it along
- *      without type.
- * @deprecated Use goog.functions.identity instead.
- */
-goog.identityFunction = function(opt_returnValue, var_args) {
-  return opt_returnValue;
-};
-
-
-/**
  * When defining a class Foo with an abstract method bar(), you can do:
  * Foo.prototype.bar = goog.abstractMethod
  *
@@ -790,8 +770,8 @@ goog.instantiatedSingletons_ = [];
 /**
  * @define {boolean} Whether to load goog.modules using {@code eval} when using
  * the debug loader.  This provides a better debugging experience as the
- * source is unmodified and can be edited using Chrome Workspaces or
- * similiar.  However in some environments the use of {@code eval} is banned
+ * source is unmodified and can be edited using Chrome Workspaces or similar.
+ * However in some environments the use of {@code eval} is banned
  * so we provide an alternative.
  */
 goog.define('goog.LOAD_MODULE_USING_EVAL', true);
@@ -820,13 +800,6 @@ goog.DEPENDENCIES_ENABLED = !COMPILED && goog.ENABLE_DEBUG_LOADER;
 
 
 if (goog.DEPENDENCIES_ENABLED) {
-  /**
-   * Object used to keep track of urls that have already been added. This record
-   * allows the prevention of circular dependencies.
-   * @private {!Object<string, boolean>}
-   */
-  goog.included_ = {};
-
 
   /**
    * This object is used to keep track of dependencies and other data that is
@@ -863,9 +836,9 @@ if (goog.DEPENDENCIES_ENABLED) {
    * @private
    */
   goog.inHtmlDocument_ = function() {
+    /** @type {Document} */
     var doc = goog.global.document;
-    return typeof doc != 'undefined' &&
-           'write' in doc;  // XULDocument misses write.
+    return doc != null && 'write' in doc;  // XULDocument misses write.
   };
 
 
@@ -874,14 +847,15 @@ if (goog.DEPENDENCIES_ENABLED) {
    * @private
    */
   goog.findBasePath_ = function() {
-    if (goog.global.CLOSURE_BASE_PATH) {
+    if (goog.isDef(goog.global.CLOSURE_BASE_PATH)) {
       goog.basePath = goog.global.CLOSURE_BASE_PATH;
       return;
     } else if (!goog.inHtmlDocument_()) {
       return;
     }
+    /** @type {Document} */
     var doc = goog.global.document;
-    var scripts = doc.getElementsByTagName('script');
+    var scripts = doc.getElementsByTagName('SCRIPT');
     // Search backwards since the current script is in almost all cases the one
     // that has base.js.
     for (var i = scripts.length - 1; i >= 0; --i) {
@@ -914,8 +888,8 @@ if (goog.DEPENDENCIES_ENABLED) {
 
 
   /** @const @private {boolean} */
-  goog.IS_OLD_IE_ = goog.global.document &&
-      goog.global.document.all && !goog.global.atob;
+  goog.IS_OLD_IE_ = !!(!goog.global.atob && goog.global.document &&
+      goog.global.document.all);
 
 
   /**
@@ -965,7 +939,7 @@ if (goog.DEPENDENCIES_ENABLED) {
     }
   };
 
-  // On IE9 and ealier, it is necessary to handle
+  // On IE9 and earlier, it is necessary to handle
   // deferred module loads. In later browsers, the
   // code to be evaluated is simply inserted as a script
   // block in the correct order. To eval deferred
@@ -1068,6 +1042,33 @@ if (goog.DEPENDENCIES_ENABLED) {
 
 
   /**
+   * Load a goog.module from the provided URL.  This is not a general purpose
+   * code loader and does not support late loading code, that is it should only
+   * be used during page load. This method exists to support unit tests and
+   * "debug" loaders that would otherwise have inserted script tags. Under the
+   * hood this needs to use a synchronous XHR and is not recommeneded for
+   * production code.
+   *
+   * The module's goog.requires must have already been satisified; an exception
+   * will be thrown if this is not the case. This assumption is that no
+   * "deps.js" file exists, so there is no way to discover and locate the
+   * module-to-be-loaded's dependencies and no attempt is made to do so.
+   *
+   * There should only be one attempt to load a module.  If
+   * "goog.loadModuleFromUrl" is called for an already loaded module, an
+   * exception will be throw.
+   *
+   * @param {string} url The URL from which to attempt to load the goog.module.
+   */
+  goog.loadModuleFromUrl = function(url) {
+    // Because this executes synchronously, we don't need to do any additional
+    // bookkeeping. When "goog.loadModule" the namespace will be marked as
+    // having been provided which is sufficient.
+    goog.retrieveAndExecModule_(url);
+  };
+
+
+  /**
    * @param {function(?):?|string} moduleDef The module definition.
    */
   goog.loadModule = function(moduleDef) {
@@ -1079,7 +1080,9 @@ if (goog.DEPENDENCIES_ENABLED) {
     var previousState = goog.moduleLoaderState_;
     try {
       goog.moduleLoaderState_ = {
-        moduleName: undefined, declareTestMethods: false};
+        moduleName: undefined,
+        declareLegacyNamespace: false
+      };
       var exports;
       if (goog.isFunction(moduleDef)) {
         exports = moduleDef.call(goog.global, {});
@@ -1103,17 +1106,6 @@ if (goog.DEPENDENCIES_ENABLED) {
       }
 
       goog.loadedModules_[moduleName] = exports;
-      if (goog.moduleLoaderState_.declareTestMethods) {
-        for (var entry in exports) {
-          if (entry.indexOf('test', 0) === 0 ||
-              entry == 'tearDown' ||
-              entry == 'setUp' ||
-              entry == 'setUpPage' ||
-              entry == 'tearDownPage') {
-            goog.global[entry] = exports[entry];
-          }
-        }
-      }
     } finally {
       goog.moduleLoaderState_ = previousState;
     }
@@ -1121,17 +1113,66 @@ if (goog.DEPENDENCIES_ENABLED) {
 
 
   /**
-   * @param {string} source
-   * @return {!Object}
-   * @private
+   * @private @const {function(string):?}
+   *
+   * The new type inference warns because this function has no formal
+   * parameters, but its jsdoc says that it takes one argument.
+   * (The argument is used via arguments[0], but NTI does not detect this.)
+   * @suppress {newCheckTypes}
    */
-  goog.loadModuleFromSource_ = function(source) {
+  goog.loadModuleFromSource_ = function() {
     // NOTE: we avoid declaring parameters or local variables here to avoid
     // masking globals or leaking values into the module definition.
     'use strict';
     var exports = {};
     eval(arguments[0]);
     return exports;
+  };
+
+
+  /**
+   * Writes a new script pointing to {@code src} directly into the DOM.
+   *
+   * NOTE: This method is not CSP-compliant. @see goog.appendScriptSrcNode_ for
+   * the fallback mechanism.
+   *
+   * @param {string} src The script URL.
+   * @private
+   */
+  goog.writeScriptSrcNode_ = function(src) {
+    goog.global.document.write(
+        '<script type="text/javascript" src="' + src + '"></' + 'script>');
+  };
+
+
+  /**
+   * Appends a new script node to the DOM using a CSP-compliant mechanism. This
+   * method exists as a fallback for document.write (which is not allowed in a
+   * strict CSP context, e.g., Chrome apps).
+   *
+   * NOTE: This method is not analogous to using document.write to insert a
+   * <script> tag; specifically, the user agent will execute a script added by
+   * document.write immediately after the current script block finishes
+   * executing, whereas the DOM-appended script node will not be executed until
+   * the entire document is parsed and executed. That is to say, this script is
+   * added to the end of the script execution queue.
+   *
+   * The page must not attempt to call goog.required entities until after the
+   * document has loaded, e.g., in or after the window.onload callback.
+   *
+   * @param {string} src The script URL.
+   * @private
+   */
+  goog.appendScriptSrcNode_ = function(src) {
+    /** @type {Document} */
+    var doc = goog.global.document;
+    var scriptEl = /** @type {HTMLScriptElement} */ (
+        doc.createElement('script'));
+    scriptEl.type = 'text/javascript';
+    scriptEl.src = src;
+    scriptEl.defer = false;
+    scriptEl.async = false;
+    doc.head.appendChild(scriptEl);
   };
 
 
@@ -1146,12 +1187,15 @@ if (goog.DEPENDENCIES_ENABLED) {
    */
   goog.writeScriptTag_ = function(src, opt_sourceText) {
     if (goog.inHtmlDocument_()) {
+      /** @type {!HTMLDocument} */
       var doc = goog.global.document;
 
       // If the user tries to require a new symbol after document load,
       // something has gone terribly wrong. Doing a document.write would
-      // wipe out the page.
-      if (doc.readyState == 'complete') {
+      // wipe out the page. This does not apply to the CSP-compliant method
+      // of writing script tags.
+      if (!goog.ENABLE_CHROME_APP_SAFE_SCRIPT_LOADING &&
+          doc.readyState == 'complete') {
         // Certain test frameworks load base.js multiple times, which tries
         // to write deps.js each time. If that happens, just fail silently.
         // These frameworks wipe the page between each load of base.js, so this
@@ -1168,9 +1212,11 @@ if (goog.DEPENDENCIES_ENABLED) {
 
       if (opt_sourceText === undefined) {
         if (!isOldIE) {
-          doc.write(
-              '<script type="text/javascript" src="' +
-                  src + '"></' + 'script>');
+          if (goog.ENABLE_CHROME_APP_SAFE_SCRIPT_LOADING) {
+            goog.appendScriptSrcNode_(src);
+          } else {
+            goog.writeScriptSrcNode_(src);
+          }
         } else {
           var state = " onreadystatechange='goog.onScriptLoad_(this, " +
               ++goog.lastNonModuleScriptIndex_ + ")' ";
@@ -1215,9 +1261,11 @@ if (goog.DEPENDENCIES_ENABLED) {
   /**
    * Resolves dependencies based on the dependencies added using addDependency
    * and calls importScript_ in the correct order.
+   * @param {string} pathToLoad The path from which to start discovering
+   *     dependencies.
    * @private
    */
-  goog.writeScripts_ = function() {
+  goog.writeScripts_ = function(pathToLoad) {
     /** @type {!Array<string>} The scripts we need to write this time. */
     var scripts = [];
     var seenScript = {};
@@ -1232,10 +1280,6 @@ if (goog.DEPENDENCIES_ENABLED) {
       // We have already visited this one. We can get here if we have cyclic
       // dependencies.
       if (path in deps.visited) {
-        if (!(path in seenScript)) {
-          seenScript[path] = true;
-          scripts.push(path);
-        }
         return;
       }
 
@@ -1261,11 +1305,7 @@ if (goog.DEPENDENCIES_ENABLED) {
       }
     }
 
-    for (var path in goog.included_) {
-      if (!deps.written[path]) {
-        visitNode(path);
-      }
-    }
+    visitNode(pathToLoad);
 
     // record that we are going to load all these scripts.
     for (var i = 0; i < scripts.length; i++) {
@@ -1279,14 +1319,12 @@ if (goog.DEPENDENCIES_ENABLED) {
     var moduleState = goog.moduleLoaderState_;
     goog.moduleLoaderState_ = null;
 
-    var loadingModule = false;
     for (var i = 0; i < scripts.length; i++) {
       var path = scripts[i];
       if (path) {
         if (!deps.pathIsModule[path]) {
           goog.importScript_(goog.basePath + path);
         } else {
-          loadingModule = true;
           goog.importModule_(goog.basePath + path);
         }
       } else {
@@ -1349,6 +1387,25 @@ goog.normalizePath_ = function(path) {
 
 
 /**
+ * Loads file by synchronous XHR. Should not be used in production environments.
+ * @param {string} src Source URL.
+ * @return {string} File contents.
+ * @private
+ */
+goog.loadFileSync_ = function(src) {
+  if (goog.global.CLOSURE_LOAD_FILE_SYNC) {
+    return goog.global.CLOSURE_LOAD_FILE_SYNC(src);
+  } else {
+    /** @type {XMLHttpRequest} */
+    var xhr = new goog.global['XMLHttpRequest']();
+    xhr.open('get', src, false);
+    xhr.send();
+    return xhr.responseText;
+  }
+};
+
+
+/**
  * Retrieve and execute a module.
  * @param {string} src Script source URL.
  * @private
@@ -1364,18 +1421,7 @@ goog.retrieveAndExecModule_ = function(src) {
     var importScript = goog.global.CLOSURE_IMPORT_SCRIPT ||
         goog.writeScriptTag_;
 
-    var scriptText = null;
-
-    var xhr = new goog.global['XMLHttpRequest']();
-
-    /** @this {Object} */
-    xhr.onload = function() {
-      scriptText = this.responseText;
-    };
-    xhr.open('get', src, false);
-    xhr.send();
-
-    scriptText = xhr.responseText;
+    var scriptText = goog.loadFileSync_(src);
 
     if (scriptText != null) {
       var execModuleScript = goog.wrapModule_(src, scriptText);
@@ -1401,7 +1447,7 @@ goog.retrieveAndExecModule_ = function(src) {
 /**
  * This is a "fixed" version of the typeof operator.  It differs from the typeof
  * operator in such a way that null returns 'null' and arrays return 'array'.
- * @param {*} value The value to get the type of.
+ * @param {?} value The value to get the type of.
  * @return {string} The name of the type.
  */
 goog.typeOf = function(value) {
@@ -1423,7 +1469,7 @@ goog.typeOf = function(value) {
       //   value, the compiler requires the value be cast to type Object,
       //   even though the ECMA spec explicitly allows it.
       var className = Object.prototype.toString.call(
-          /** @type {Object} */ (value));
+          /** @type {!Object} */ (value));
       // In Firefox 3.6, attempting to access iframe window objects' length
       // property throws an NS_ERROR_FAILURE, so we need to special-case it
       // here.
@@ -1631,12 +1677,12 @@ goog.getUid = function(obj) {
 
 
 /**
- * Whether the given object is alreay assigned a unique ID.
+ * Whether the given object is already assigned a unique ID.
  *
  * This does not modify the object.
  *
  * @param {!Object} obj The object to check.
- * @return {boolean} Whether there an assigned unique id for the object.
+ * @return {boolean} Whether there is an assigned unique id for the object.
  */
 goog.hasUid = function(obj) {
   return !!obj[goog.UID_PROPERTY_];
@@ -1654,7 +1700,7 @@ goog.removeUid = function(obj) {
 
   // In IE, DOM nodes are not instances of Object and throw an exception if we
   // try to delete.  Instead we try to use removeAttribute.
-  if ('removeAttribute' in obj) {
+  if (obj !== null && 'removeAttribute' in obj) {
     obj.removeAttribute(goog.UID_PROPERTY_);
   }
   /** @preserveTry */
@@ -1795,7 +1841,7 @@ goog.bindJs_ = function(fn, selfObj, var_args) {
  * Also see: {@link #partial}.
  *
  * Usage:
- * <pre>var barMethBound = bind(myFunction, myObj, 'arg1', 'arg2');
+ * <pre>var barMethBound = goog.bind(myFunction, myObj, 'arg1', 'arg2');
  * barMethBound('arg3', 'arg4');</pre>
  *
  * @param {?function(this:T, ...)} fn A function to partially apply.
@@ -1803,7 +1849,7 @@ goog.bindJs_ = function(fn, selfObj, var_args) {
  *     function is run.
  * @param {...*} var_args Additional arguments that are partially applied to the
  *     function.
- * @return {!Function} A partially-applied form of the function bind() was
+ * @return {!Function} A partially-applied form of the function goog.bind() was
  *     invoked as a method of.
  * @template T
  * @suppress {deprecated} See above.
@@ -1827,17 +1873,17 @@ goog.bind = function(fn, selfObj, var_args) {
 
 
 /**
- * Like bind(), except that a 'this object' is not required. Useful when the
- * target function is already bound.
+ * Like goog.bind(), except that a 'this object' is not required. Useful when
+ * the target function is already bound.
  *
  * Usage:
- * var g = partial(f, arg1, arg2);
+ * var g = goog.partial(f, arg1, arg2);
  * g(arg3, arg4);
  *
  * @param {Function} fn A function to partially apply.
  * @param {...*} var_args Additional arguments that are partially applied to fn.
- * @return {!Function} A partially-applied form of the function bind() was
- *     invoked as a method of.
+ * @return {!Function} A partially-applied form of the function goog.partial()
+ *     was invoked as a method of.
  */
 goog.partial = function(fn, var_args) {
   var args = Array.prototype.slice.call(arguments, 1);
@@ -1895,9 +1941,13 @@ goog.globalEval = function(script) {
   } else if (goog.global.eval) {
     // Test to see if eval works
     if (goog.evalWorksForGlobals_ == null) {
-      goog.global.eval('var _et_ = 1;');
-      if (typeof goog.global['_et_'] != 'undefined') {
-        delete goog.global['_et_'];
+      goog.global.eval('var _evalTest_ = 1;');
+      if (typeof goog.global['_evalTest_'] != 'undefined') {
+        try {
+          delete goog.global['_evalTest_'];
+        } catch (ignore) {
+          // Microsoft edge fails the deletion above in strict mode.
+        }
         goog.evalWorksForGlobals_ = true;
       } else {
         goog.evalWorksForGlobals_ = false;
@@ -1907,8 +1957,10 @@ goog.globalEval = function(script) {
     if (goog.evalWorksForGlobals_) {
       goog.global.eval(script);
     } else {
+      /** @type {Document} */
       var doc = goog.global.document;
-      var scriptElt = doc.createElement('script');
+      var scriptElt = /** @type {!HTMLScriptElement} */ (
+          doc.createElement('SCRIPT'));
       scriptElt.type = 'text/javascript';
       scriptElt.defer = false;
       // Note(user): can't use .innerHTML since "t('<test>')" will fail and
@@ -1971,7 +2023,7 @@ goog.cssNameMappingStyle_;
  *     var x = goog.getCssName('foo');
  *     var y = goog.getCssName(this.baseClass, 'active');
  *  becomes:
- *     var x= 'foo';
+ *     var x = 'foo';
  *     var y = this.baseClass + '-active';
  *
  * If one argument is passed it will be processed, if two are passed only the
@@ -2030,7 +2082,7 @@ goog.getCssName = function(className, opt_modifier) {
  * </pre>
  * When declared as a map of string literals to string literals, the JSCompiler
  * will replace all calls to goog.getCssName() using the supplied map if the
- * --closure_pass flag is set.
+ * --process_closure_primitives flag is set.
  *
  * @param {!Object} mapping A map of strings to strings where keys are possible
  *     arguments to goog.getCssName() and values are the corresponding values
@@ -2086,7 +2138,8 @@ if (!COMPILED && goog.global.CLOSURE_CSS_NAME_MAPPING) {
 goog.getMsg = function(str, opt_values) {
   if (opt_values) {
     str = str.replace(/\{\$([^}]+)}/g, function(match, key) {
-      return key in opt_values ? opt_values[key] : match;
+      return (opt_values != null && key in opt_values) ?
+          opt_values[key] : match;
     });
   }
   return str;
@@ -2169,8 +2222,8 @@ goog.exportProperty = function(object, publicName, symbol) {
  * child.foo(); // This works.
  * </pre>
  *
- * @param {Function} childCtor Child class.
- * @param {Function} parentCtor Parent class.
+ * @param {!Function} childCtor Child class.
+ * @param {!Function} parentCtor Parent class.
  */
 goog.inherits = function(childCtor, parentCtor) {
   /** @constructor */
@@ -2316,7 +2369,6 @@ if (!COMPILED) {
 }
 
 
-
 //==============================================================================
 // goog.defineClass implementation
 //==============================================================================
@@ -2333,7 +2385,7 @@ if (!COMPILED) {
  *
  * @param {Function} superClass The superclass, Object or null.
  * @param {goog.defineClass.ClassDescriptor} def
- *     An object literal describing the
+ *     An object literal describing
  *     the class.  It may have the following properties:
  *     "constructor": the constructor function
  *     "statics": an object literal containing methods to add to the constructor
@@ -2377,10 +2429,10 @@ goog.defineClass = function(superClass, def) {
 
 
 /**
- * @typedef {
- *     !Object|
- *     {constructor:!Function}|
- *     {constructor:!Function, statics:(Object|function(Function):void)}}
+ * @typedef {{
+ *   constructor: (!Function|undefined),
+ *   statics: (Object|undefined|function(Function):void)
+ * }}
  * @suppress {missingProvide}
  */
 goog.defineClass.ClassDescriptor;
@@ -2412,7 +2464,7 @@ goog.defineClass.createSealingConstructor_ = function(ctr, superClass) {
       return ctr;
     }
     /**
-     * @this {*}
+     * @this {Object}
      * @return {?}
      */
     var wrappedCtr = function() {
@@ -2452,7 +2504,7 @@ goog.defineClass.OBJECT_PROTOTYPE_FIELDS_ = [
 // TODO(johnlenz): share this function with the goog.object
 /**
  * @param {!Object} target The object to add properties to.
- * @param {!Object} source The object to copy properites from.
+ * @param {!Object} source The object to copy properties from.
  * @private
  */
 goog.defineClass.applyProperties_ = function(target, source) {
@@ -2701,6 +2753,15 @@ goog.debug.Error = function(opt_msg) {
   if (opt_msg) {
     this.message = String(opt_msg);
   }
+
+  /**
+   * Whether to report this error to the server. Setting this to false will
+   * cause the error reporter to not report the error back to the server,
+   * which can be useful if the client knows that the error has already been
+   * logged on the server.
+   * @type {boolean}
+   */
+  this.reportErrorToServer = true;
 };
 goog.inherits(goog.debug.Error, Error);
 
@@ -2963,7 +3024,7 @@ goog.string.isAlphaNumeric = function(str) {
 /**
  * Checks if a character is a space character.
  * @param {string} ch Character to check.
- * @return {boolean} True if {code ch} is a space.
+ * @return {boolean} True if {@code ch} is a space.
  */
 goog.string.isSpace = function(ch) {
   return ch == ' ';
@@ -2973,7 +3034,7 @@ goog.string.isSpace = function(ch) {
 /**
  * Checks if a character is a valid unicode character.
  * @param {string} ch Character to check.
- * @return {boolean} True if {code ch} is a valid unicode character.
+ * @return {boolean} True if {@code ch} is a valid unicode character.
  */
 goog.string.isUnicodeChar = function(ch) {
   return ch.length == 1 && ch >= ' ' && ch <= '~' ||
@@ -3107,31 +3168,18 @@ goog.string.caseInsensitiveCompare = function(str1, str2) {
 
 
 /**
- * Regular expression used for splitting a string into substrings of fractional
- * numbers, integers, and non-numeric characters.
- * @type {RegExp}
+ * Compares two strings interpreting their numeric substrings as numbers.
+ *
+ * @param {string} str1 First string.
+ * @param {string} str2 Second string.
+ * @param {!RegExp} tokenizerRegExp Splits a string into substrings of
+ *     non-negative integers, non-numeric characters and optionally fractional
+ *     numbers starting with a decimal point.
+ * @return {number} Negative if str1 < str2, 0 is str1 == str2, positive if
+ *     str1 > str2.
  * @private
  */
-goog.string.numerateCompareRegExp_ = /(\.\d+)|(\d+)|(\D+)/g;
-
-
-/**
- * String comparison function that handles numbers in a way humans might expect.
- * Using this function, the string "File 2.jpg" sorts before "File 10.jpg". The
- * comparison is mostly case-insensitive, though strings that are identical
- * except for case are sorted with the upper-case strings before lower-case.
- *
- * This comparison function is significantly slower (about 500x) than either
- * the default or the case-insensitive compare. It should not be used in
- * time-critical code, but should be fast enough to sort several hundred short
- * strings (like filenames) with a reasonable delay.
- *
- * @param {string} str1 The string to compare in a numerically sensitive way.
- * @param {string} str2 The string to compare {@code str1} to.
- * @return {number} less than 0 if str1 < str2, 0 if str1 == str2, greater than
- *     0 if str1 > str2.
- */
-goog.string.numerateCompare = function(str1, str2) {
+goog.string.numberAwareCompare_ = function(str1, str2, tokenizerRegExp) {
   if (str1 == str2) {
     return 0;
   }
@@ -3144,8 +3192,8 @@ goog.string.numerateCompare = function(str1, str2) {
 
   // Using match to split the entire string ahead of time turns out to be faster
   // for most inputs than using RegExp.exec or iterating over each character.
-  var tokens1 = str1.toLowerCase().match(goog.string.numerateCompareRegExp_);
-  var tokens2 = str2.toLowerCase().match(goog.string.numerateCompareRegExp_);
+  var tokens1 = str1.toLowerCase().match(tokenizerRegExp);
+  var tokens2 = str2.toLowerCase().match(tokenizerRegExp);
 
   var count = Math.min(tokens1.length, tokens2.length);
 
@@ -3155,7 +3203,6 @@ goog.string.numerateCompare = function(str1, str2) {
 
     // Compare pairs of tokens, returning if one token sorts before the other.
     if (a != b) {
-
       // Only if both tokens are integers is a special comparison required.
       // Decimal numbers are sorted as strings (e.g., '.09' < '.1').
       var num1 = parseInt(a, 10);
@@ -3175,10 +3222,59 @@ goog.string.numerateCompare = function(str1, str2) {
   }
 
   // The two strings must be equivalent except for case (perfect equality is
-  // tested at the head of the function.) Revert to default ASCII-betical string
-  // comparison to stablize the sort.
+  // tested at the head of the function.) Revert to default ASCII string
+  // comparison to stabilize the sort.
   return str1 < str2 ? -1 : 1;
 };
+
+
+/**
+ * String comparison function that handles non-negative integer numbers in a
+ * way humans might expect. Using this function, the string 'File 2.jpg' sorts
+ * before 'File 10.jpg', and 'Version 1.9' before 'Version 1.10'. The comparison
+ * is mostly case-insensitive, though strings that are identical except for case
+ * are sorted with the upper-case strings before lower-case.
+ *
+ * This comparison function is up to 50x slower than either the default or the
+ * case-insensitive compare. It should not be used in time-critical code, but
+ * should be fast enough to sort several hundred short strings (like filenames)
+ * with a reasonable delay.
+ *
+ * @param {string} str1 The string to compare in a numerically sensitive way.
+ * @param {string} str2 The string to compare {@code str1} to.
+ * @return {number} less than 0 if str1 < str2, 0 if str1 == str2, greater than
+ *     0 if str1 > str2.
+ */
+goog.string.intAwareCompare = function(str1, str2) {
+  return goog.string.numberAwareCompare_(str1, str2, /\d+|\D+/g);
+};
+
+
+/**
+ * String comparison function that handles non-negative integer and fractional
+ * numbers in a way humans might expect. Using this function, the string
+ * 'File 2.jpg' sorts before 'File 10.jpg', and '3.14' before '3.2'. Equivalent
+ * to {@link goog.string.intAwareCompare} apart from the way how it interprets
+ * dots.
+ *
+ * @param {string} str1 The string to compare in a numerically sensitive way.
+ * @param {string} str2 The string to compare {@code str1} to.
+ * @return {number} less than 0 if str1 < str2, 0 if str1 == str2, greater than
+ *     0 if str1 > str2.
+ */
+goog.string.floatAwareCompare = function(str1, str2) {
+  return goog.string.numberAwareCompare_(str1, str2, /\d+|\.\d+|\D+/g);
+};
+
+
+/**
+ * Alias for {@link goog.string.floatAwareCompare}.
+ *
+ * @param {string} str1
+ * @param {string} str2
+ * @return {number}
+ */
+goog.string.numerateCompare = goog.string.floatAwareCompare;
 
 
 /**
@@ -3633,7 +3729,13 @@ goog.string.specialEscapeChars_ = {
   '\t': '\\t',
   '\x0B': '\\x0B', // '\v' is not supported in JScript
   '"': '\\"',
-  '\\': '\\\\'
+  '\\': '\\\\',
+  // To support the use case of embedding quoted strings inside of script
+  // tags, we have to make sure HTML comments and opening/closing script tags do
+  // not appear in the resulting string. The specific strings that must be
+  // escaped are documented at:
+  // http://www.w3.org/TR/html51/semantics.html#restrictions-for-contents-of-script-elements
+  '<': '\x3c'
 };
 
 
@@ -3648,25 +3750,22 @@ goog.string.jsEscapeCache_ = {
 
 /**
  * Encloses a string in double quotes and escapes characters so that the
- * string is a valid JS string.
+ * string is a valid JS string. The resulting string is safe to embed in
+ * `<script>` tags as "<" is escaped.
  * @param {string} s The string to quote.
  * @return {string} A copy of {@code s} surrounded by double quotes.
  */
 goog.string.quote = function(s) {
   s = String(s);
-  if (s.quote) {
-    return s.quote();
-  } else {
-    var sb = ['"'];
-    for (var i = 0; i < s.length; i++) {
-      var ch = s.charAt(i);
-      var cc = ch.charCodeAt(0);
-      sb[i + 1] = goog.string.specialEscapeChars_[ch] ||
-          ((cc > 31 && cc < 127) ? ch : goog.string.escapeChar(ch));
-    }
-    sb.push('"');
-    return sb.join('');
+  var sb = ['"'];
+  for (var i = 0; i < s.length; i++) {
+    var ch = s.charAt(i);
+    var cc = ch.charCodeAt(0);
+    sb[i + 1] = goog.string.specialEscapeChars_[ch] ||
+                ((cc > 31 && cc < 127) ? ch : goog.string.escapeChar(ch));
   }
+  sb.push('"');
+  return sb.join('');
 };
 
 
@@ -3822,9 +3921,14 @@ goog.string.regExpEscape = function(s) {
  * @return {string} A string containing {@code length} repetitions of
  *     {@code string}.
  */
-goog.string.repeat = function(string, length) {
-  return new Array(length + 1).join(string);
-};
+goog.string.repeat = (String.prototype.repeat) ?
+    function(string, length) {
+      // The native method is over 100 times faster than the alternative.
+      return string.repeat(length);
+    } :
+    function(string, length) {
+      return new Array(length + 1).join(string);
+    };
 
 
 /**
@@ -3976,14 +4080,6 @@ goog.string.compareElements_ = function(left, right) {
 
 
 /**
- * Maximum value of #goog.string.hashCode, exclusive. 2^32.
- * @type {number}
- * @private
- */
-goog.string.HASHCODE_MAX_ = 0x100000000;
-
-
-/**
  * String hash function similar to java.lang.String.hashCode().
  * The hash code for a string is computed as
  * s[0] * 31 ^ (n - 1) + s[1] * 31 ^ (n - 2) + ... + s[n - 1],
@@ -3997,9 +4093,8 @@ goog.string.HASHCODE_MAX_ = 0x100000000;
 goog.string.hashCode = function(str) {
   var result = 0;
   for (var i = 0; i < str.length; ++i) {
-    result = 31 * result + str.charCodeAt(i);
     // Normalize to 4 byte range, 0 ... 2^32.
-    result %= goog.string.HASHCODE_MAX_;
+    result = (31 * result + str.charCodeAt(i)) >>> 0;
   }
   return result;
 };
@@ -4336,7 +4431,7 @@ goog.define('goog.asserts.ENABLE_ASSERTS', goog.DEBUG);
 goog.asserts.AssertionError = function(messagePattern, messageArgs) {
   messageArgs.unshift(messagePattern);
   goog.debug.Error.call(this, goog.string.subs.apply(null, messageArgs));
-  // Remove the messagePattern afterwards to avoid permenantly modifying the
+  // Remove the messagePattern afterwards to avoid permanently modifying the
   // passed in array.
   messageArgs.shift();
 
@@ -4573,7 +4668,7 @@ goog.asserts.assertBoolean = function(value, opt_message, var_args) {
  * @param {...*} var_args The items to substitute into the failure message.
  * @return {!Element} The value, likely to be a DOM Element when asserts are
  *     enabled.
- * @throws {goog.asserts.AssertionError} When the value is not a boolean.
+ * @throws {goog.asserts.AssertionError} When the value is not an Element.
  */
 goog.asserts.assertElement = function(value, opt_message, var_args) {
   if (goog.asserts.ENABLE_ASSERTS && (!goog.isObject(value) ||
@@ -4592,7 +4687,7 @@ goog.asserts.assertElement = function(value, opt_message, var_args) {
  *
  * The compiler may tighten the type returned by this function.
  *
- * @param {*} value The value to check.
+ * @param {?} value The value to check.
  * @param {function(new: T, ...)} type A user-defined constructor.
  * @param {string=} opt_message Error message in case of failure.
  * @param {...*} var_args The items to substitute into the failure message.
@@ -4816,7 +4911,9 @@ goog.proto2.FieldDescriptor.prototype.getTag = function() {
  * @return {!goog.proto2.Descriptor} The descriptor.
  */
 goog.proto2.FieldDescriptor.prototype.getContainingType = function() {
-  return this.parent_.getDescriptor();
+  // Generated JS proto_library messages have getDescriptor() method which can
+  // be called with or without an instance.
+  return this.parent_.prototype.getDescriptor();
 };
 
 
@@ -4898,7 +4995,11 @@ goog.proto2.FieldDescriptor.prototype.deserializationConversionPermitted =
  * @return {!goog.proto2.Descriptor} The message descriptor.
  */
 goog.proto2.FieldDescriptor.prototype.getFieldMessageType = function() {
-  return this.nativeType_.getDescriptor();
+  // Generated JS proto_library messages have getDescriptor() method which can
+  // be called with or without an instance.
+  var messageClass = /** @type {function(new:goog.proto2.Message)} */(
+      this.nativeType_);
+  return messageClass.prototype.getDescriptor();
 };
 
 
@@ -4974,14 +5075,14 @@ goog.provide('goog.object');
  *
  * @param {Object<K,V>} obj The object over which to iterate.
  * @param {function(this:T,V,?,Object<K,V>):?} f The function to call
- *     for every element. This function takes 3 arguments (the element, the
- *     index and the object) and the return value is ignored.
+ *     for every element. This function takes 3 arguments (the value, the
+ *     key and the object) and the return value is ignored.
  * @param {T=} opt_obj This is used as the 'this' object within f.
  * @template T,K,V
  */
 goog.object.forEach = function(obj, f, opt_obj) {
   for (var key in obj) {
-    f.call(opt_obj, obj[key], key, obj);
+    f.call(/** @type {?} */ (opt_obj), obj[key], key, obj);
   }
 };
 
@@ -4993,7 +5094,7 @@ goog.object.forEach = function(obj, f, opt_obj) {
  * @param {Object<K,V>} obj The object over which to iterate.
  * @param {function(this:T,V,?,Object<K,V>):boolean} f The function to call
  *     for every element. This
- *     function takes 3 arguments (the element, the index and the object)
+ *     function takes 3 arguments (the value, the key and the object)
  *     and should return a boolean. If the return value is true the
  *     element is added to the result object. If it is false the
  *     element is not included.
@@ -5005,7 +5106,7 @@ goog.object.forEach = function(obj, f, opt_obj) {
 goog.object.filter = function(obj, f, opt_obj) {
   var res = {};
   for (var key in obj) {
-    if (f.call(opt_obj, obj[key], key, obj)) {
+    if (f.call(/** @type {?} */ (opt_obj), obj[key], key, obj)) {
       res[key] = obj[key];
     }
   }
@@ -5020,7 +5121,7 @@ goog.object.filter = function(obj, f, opt_obj) {
  * @param {Object<K,V>} obj The object over which to iterate.
  * @param {function(this:T,V,?,Object<K,V>):R} f The function to call
  *     for every element. This function
- *     takes 3 arguments (the element, the index and the object)
+ *     takes 3 arguments (the value, the key and the object)
  *     and should return something. The result will be inserted
  *     into a new object.
  * @param {T=} opt_obj This is used as the 'this' object within f.
@@ -5030,7 +5131,7 @@ goog.object.filter = function(obj, f, opt_obj) {
 goog.object.map = function(obj, f, opt_obj) {
   var res = {};
   for (var key in obj) {
-    res[key] = f.call(opt_obj, obj[key], key, obj);
+    res[key] = f.call(/** @type {?} */ (opt_obj), obj[key], key, obj);
   }
   return res;
 };
@@ -5044,7 +5145,7 @@ goog.object.map = function(obj, f, opt_obj) {
  * @param {Object<K,V>} obj The object to check.
  * @param {function(this:T,V,?,Object<K,V>):boolean} f The function to
  *     call for every element. This function
- *     takes 3 arguments (the element, the index and the object) and should
+ *     takes 3 arguments (the value, the key and the object) and should
  *     return a boolean.
  * @param {T=} opt_obj This is used as the 'this' object within f.
  * @return {boolean} true if any element passes the test.
@@ -5052,7 +5153,7 @@ goog.object.map = function(obj, f, opt_obj) {
  */
 goog.object.some = function(obj, f, opt_obj) {
   for (var key in obj) {
-    if (f.call(opt_obj, obj[key], key, obj)) {
+    if (f.call(/** @type {?} */ (opt_obj), obj[key], key, obj)) {
       return true;
     }
   }
@@ -5068,7 +5169,7 @@ goog.object.some = function(obj, f, opt_obj) {
  * @param {Object<K,V>} obj The object to check.
  * @param {?function(this:T,V,?,Object<K,V>):boolean} f The function to
  *     call for every element. This function
- *     takes 3 arguments (the element, the index and the object) and should
+ *     takes 3 arguments (the value, the key and the object) and should
  *     return a boolean.
  * @param {T=} opt_obj This is used as the 'this' object within f.
  * @return {boolean} false if any element fails the test.
@@ -5076,7 +5177,7 @@ goog.object.some = function(obj, f, opt_obj) {
  */
 goog.object.every = function(obj, f, opt_obj) {
   for (var key in obj) {
-    if (!f.call(opt_obj, obj[key], key, obj)) {
+    if (!f.call(/** @type {?} */ (opt_obj), obj[key], key, obj)) {
       return false;
     }
   }
@@ -5213,11 +5314,11 @@ goog.object.getValueByKeys = function(obj, var_args) {
  * Whether the object/map/hash contains the given key.
  *
  * @param {Object} obj The object in which to look for key.
- * @param {*} key The key for which to check.
+ * @param {?} key The key for which to check.
  * @return {boolean} true If the map contains the key.
  */
 goog.object.containsKey = function(obj, key) {
-  return key in obj;
+  return obj !== null && key in obj;
 };
 
 
@@ -5253,7 +5354,7 @@ goog.object.containsValue = function(obj, val) {
  */
 goog.object.findKey = function(obj, f, opt_this) {
   for (var key in obj) {
-    if (f.call(opt_this, obj[key], key, obj)) {
+    if (f.call(/** @type {?} */ (opt_this), obj[key], key, obj)) {
       return key;
     }
   }
@@ -5309,12 +5410,12 @@ goog.object.clear = function(obj) {
  * Removes a key-value pair based on the key.
  *
  * @param {Object} obj The object from which to remove the key.
- * @param {*} key The key to remove.
+ * @param {?} key The key to remove.
  * @return {boolean} Whether an element was removed.
  */
 goog.object.remove = function(obj, key) {
   var rv;
-  if ((rv = key in obj)) {
+  if (rv = key in /** @type {!Object} */ (obj)) {
     delete obj[key];
   }
   return rv;
@@ -5331,7 +5432,7 @@ goog.object.remove = function(obj, key) {
  * @template K,V
  */
 goog.object.add = function(obj, key, val) {
-  if (key in obj) {
+  if (obj !== null && key in obj) {
     throw Error('The object already contains the key "' + key + '"');
   }
   goog.object.set(obj, key, val);
@@ -5349,7 +5450,7 @@ goog.object.add = function(obj, key, val) {
  * @template K,V,R
  */
 goog.object.get = function(obj, key, opt_val) {
-  if (key in obj) {
+  if (obj !== null && key in obj) {
     return obj[key];
   }
   return opt_val;
@@ -5379,7 +5480,7 @@ goog.object.set = function(obj, key, value) {
  * @template K,V
  */
 goog.object.setIfUndefined = function(obj, key, value) {
-  return key in obj ? obj[key] : (obj[key] = value);
+  return key in /** @type {!Object} */ (obj) ? obj[key] : (obj[key] = value);
 };
 
 
@@ -5468,7 +5569,7 @@ goog.object.clone = function(obj) {
 goog.object.unsafeClone = function(obj) {
   var type = goog.typeOf(obj);
   if (type == 'object' || type == 'array') {
-    if (obj.clone) {
+    if (goog.isFunction(obj.clone)) {
       return obj.clone();
     }
     var clone = type == 'array' ? [] : {};
@@ -5714,14 +5815,6 @@ goog.array.peek = function(array) {
  */
 goog.array.last = goog.array.peek;
 
-
-/**
- * Reference to the original {@code Array.prototype}.
- * @private
- */
-goog.array.ARRAY_PROTOTYPE_ = Array.prototype;
-
-
 // NOTE(arv): Since most of the array functions are generic it allows you to
 // pass an array-like object. Strings have a length and are considered array-
 // like. However, the 'in' operator does not work on strings so we cannot just
@@ -5744,11 +5837,11 @@ goog.array.ARRAY_PROTOTYPE_ = Array.prototype;
  */
 goog.array.indexOf = goog.NATIVE_ARRAY_PROTOTYPES &&
                      (goog.array.ASSUME_NATIVE_FUNCTIONS ||
-                      goog.array.ARRAY_PROTOTYPE_.indexOf) ?
+                      Array.prototype.indexOf) ?
     function(arr, obj, opt_fromIndex) {
       goog.asserts.assert(arr.length != null);
 
-      return goog.array.ARRAY_PROTOTYPE_.indexOf.call(arr, obj, opt_fromIndex);
+      return Array.prototype.indexOf.call(arr, obj, opt_fromIndex);
     } :
     function(arr, obj, opt_fromIndex) {
       var fromIndex = opt_fromIndex == null ?
@@ -5786,14 +5879,14 @@ goog.array.indexOf = goog.NATIVE_ARRAY_PROTOTYPES &&
  */
 goog.array.lastIndexOf = goog.NATIVE_ARRAY_PROTOTYPES &&
                          (goog.array.ASSUME_NATIVE_FUNCTIONS ||
-                          goog.array.ARRAY_PROTOTYPE_.lastIndexOf) ?
+                          Array.prototype.lastIndexOf) ?
     function(arr, obj, opt_fromIndex) {
       goog.asserts.assert(arr.length != null);
 
       // Firefox treats undefined and null as 0 in the fromIndex argument which
       // leads it to always return -1
       var fromIndex = opt_fromIndex == null ? arr.length - 1 : opt_fromIndex;
-      return goog.array.ARRAY_PROTOTYPE_.lastIndexOf.call(arr, obj, fromIndex);
+      return Array.prototype.lastIndexOf.call(arr, obj, fromIndex);
     } :
     function(arr, obj, opt_fromIndex) {
       var fromIndex = opt_fromIndex == null ? arr.length - 1 : opt_fromIndex;
@@ -5832,18 +5925,18 @@ goog.array.lastIndexOf = goog.NATIVE_ARRAY_PROTOTYPES &&
  */
 goog.array.forEach = goog.NATIVE_ARRAY_PROTOTYPES &&
                      (goog.array.ASSUME_NATIVE_FUNCTIONS ||
-                      goog.array.ARRAY_PROTOTYPE_.forEach) ?
+                      Array.prototype.forEach) ?
     function(arr, f, opt_obj) {
       goog.asserts.assert(arr.length != null);
 
-      goog.array.ARRAY_PROTOTYPE_.forEach.call(arr, f, opt_obj);
+      Array.prototype.forEach.call(arr, f, opt_obj);
     } :
     function(arr, f, opt_obj) {
       var l = arr.length;  // must be fixed during loop... see docs
       var arr2 = goog.isString(arr) ? arr.split('') : arr;
       for (var i = 0; i < l; i++) {
         if (i in arr2) {
-          f.call(opt_obj, arr2[i], i, arr);
+          f.call(/** @type {?} */ (opt_obj), arr2[i], i, arr);
         }
       }
     };
@@ -5868,7 +5961,7 @@ goog.array.forEachRight = function(arr, f, opt_obj) {
   var arr2 = goog.isString(arr) ? arr.split('') : arr;
   for (var i = l - 1; i >= 0; --i) {
     if (i in arr2) {
-      f.call(opt_obj, arr2[i], i, arr);
+      f.call(/** @type {?} */ (opt_obj), arr2[i], i, arr);
     }
   }
 };
@@ -5895,11 +5988,11 @@ goog.array.forEachRight = function(arr, f, opt_obj) {
  */
 goog.array.filter = goog.NATIVE_ARRAY_PROTOTYPES &&
                     (goog.array.ASSUME_NATIVE_FUNCTIONS ||
-                     goog.array.ARRAY_PROTOTYPE_.filter) ?
+                     Array.prototype.filter) ?
     function(arr, f, opt_obj) {
       goog.asserts.assert(arr.length != null);
 
-      return goog.array.ARRAY_PROTOTYPE_.filter.call(arr, f, opt_obj);
+      return Array.prototype.filter.call(arr, f, opt_obj);
     } :
     function(arr, f, opt_obj) {
       var l = arr.length;  // must be fixed during loop... see docs
@@ -5909,7 +6002,7 @@ goog.array.filter = goog.NATIVE_ARRAY_PROTOTYPES &&
       for (var i = 0; i < l; i++) {
         if (i in arr2) {
           var val = arr2[i];  // in case f mutates arr2
-          if (f.call(opt_obj, val, i, arr)) {
+          if (f.call(/** @type {?} */ (opt_obj), val, i, arr)) {
             res[resLength++] = val;
           }
         }
@@ -5936,11 +6029,11 @@ goog.array.filter = goog.NATIVE_ARRAY_PROTOTYPES &&
  */
 goog.array.map = goog.NATIVE_ARRAY_PROTOTYPES &&
                  (goog.array.ASSUME_NATIVE_FUNCTIONS ||
-                  goog.array.ARRAY_PROTOTYPE_.map) ?
+                  Array.prototype.map) ?
     function(arr, f, opt_obj) {
       goog.asserts.assert(arr.length != null);
 
-      return goog.array.ARRAY_PROTOTYPE_.map.call(arr, f, opt_obj);
+      return Array.prototype.map.call(arr, f, opt_obj);
     } :
     function(arr, f, opt_obj) {
       var l = arr.length;  // must be fixed during loop... see docs
@@ -5948,7 +6041,7 @@ goog.array.map = goog.NATIVE_ARRAY_PROTOTYPES &&
       var arr2 = goog.isString(arr) ? arr.split('') : arr;
       for (var i = 0; i < l; i++) {
         if (i in arr2) {
-          res[i] = f.call(opt_obj, arr2[i], i, arr);
+          res[i] = f.call(/** @type {?} */ (opt_obj), arr2[i], i, arr);
         }
       }
       return res;
@@ -5981,18 +6074,18 @@ goog.array.map = goog.NATIVE_ARRAY_PROTOTYPES &&
  */
 goog.array.reduce = goog.NATIVE_ARRAY_PROTOTYPES &&
                     (goog.array.ASSUME_NATIVE_FUNCTIONS ||
-                     goog.array.ARRAY_PROTOTYPE_.reduce) ?
+                     Array.prototype.reduce) ?
     function(arr, f, val, opt_obj) {
       goog.asserts.assert(arr.length != null);
       if (opt_obj) {
         f = goog.bind(f, opt_obj);
       }
-      return goog.array.ARRAY_PROTOTYPE_.reduce.call(arr, f, val);
+      return Array.prototype.reduce.call(arr, f, val);
     } :
     function(arr, f, val, opt_obj) {
       var rval = val;
       goog.array.forEach(arr, function(val, index) {
-        rval = f.call(opt_obj, rval, val, index, arr);
+        rval = f.call(/** @type {?} */ (opt_obj), rval, val, index, arr);
       });
       return rval;
     };
@@ -6026,18 +6119,19 @@ goog.array.reduce = goog.NATIVE_ARRAY_PROTOTYPES &&
  */
 goog.array.reduceRight = goog.NATIVE_ARRAY_PROTOTYPES &&
                          (goog.array.ASSUME_NATIVE_FUNCTIONS ||
-                          goog.array.ARRAY_PROTOTYPE_.reduceRight) ?
+                          Array.prototype.reduceRight) ?
     function(arr, f, val, opt_obj) {
       goog.asserts.assert(arr.length != null);
+      goog.asserts.assert(f != null);
       if (opt_obj) {
         f = goog.bind(f, opt_obj);
       }
-      return goog.array.ARRAY_PROTOTYPE_.reduceRight.call(arr, f, val);
+      return Array.prototype.reduceRight.call(arr, f, val);
     } :
     function(arr, f, val, opt_obj) {
       var rval = val;
       goog.array.forEachRight(arr, function(val, index) {
-        rval = f.call(opt_obj, rval, val, index, arr);
+        rval = f.call(/** @type {?} */ (opt_obj), rval, val, index, arr);
       });
       return rval;
     };
@@ -6062,17 +6156,17 @@ goog.array.reduceRight = goog.NATIVE_ARRAY_PROTOTYPES &&
  */
 goog.array.some = goog.NATIVE_ARRAY_PROTOTYPES &&
                   (goog.array.ASSUME_NATIVE_FUNCTIONS ||
-                   goog.array.ARRAY_PROTOTYPE_.some) ?
+                   Array.prototype.some) ?
     function(arr, f, opt_obj) {
       goog.asserts.assert(arr.length != null);
 
-      return goog.array.ARRAY_PROTOTYPE_.some.call(arr, f, opt_obj);
+      return Array.prototype.some.call(arr, f, opt_obj);
     } :
     function(arr, f, opt_obj) {
       var l = arr.length;  // must be fixed during loop... see docs
       var arr2 = goog.isString(arr) ? arr.split('') : arr;
       for (var i = 0; i < l; i++) {
-        if (i in arr2 && f.call(opt_obj, arr2[i], i, arr)) {
+        if (i in arr2 && f.call(/** @type {?} */ (opt_obj), arr2[i], i, arr)) {
           return true;
         }
       }
@@ -6099,17 +6193,17 @@ goog.array.some = goog.NATIVE_ARRAY_PROTOTYPES &&
  */
 goog.array.every = goog.NATIVE_ARRAY_PROTOTYPES &&
                    (goog.array.ASSUME_NATIVE_FUNCTIONS ||
-                    goog.array.ARRAY_PROTOTYPE_.every) ?
+                    Array.prototype.every) ?
     function(arr, f, opt_obj) {
       goog.asserts.assert(arr.length != null);
 
-      return goog.array.ARRAY_PROTOTYPE_.every.call(arr, f, opt_obj);
+      return Array.prototype.every.call(arr, f, opt_obj);
     } :
     function(arr, f, opt_obj) {
       var l = arr.length;  // must be fixed during loop... see docs
       var arr2 = goog.isString(arr) ? arr.split('') : arr;
       for (var i = 0; i < l; i++) {
-        if (i in arr2 && !f.call(opt_obj, arr2[i], i, arr)) {
+        if (i in arr2 && !f.call(/** @type {?} */ (opt_obj), arr2[i], i, arr)) {
           return false;
         }
       }
@@ -6132,7 +6226,7 @@ goog.array.every = goog.NATIVE_ARRAY_PROTOTYPES &&
 goog.array.count = function(arr, f, opt_obj) {
   var count = 0;
   goog.array.forEach(arr, function(element, index, arr) {
-    if (f.call(opt_obj, element, index, arr)) {
+    if (f.call(/** @type {?} */ (opt_obj), element, index, arr)) {
       ++count;
     }
   }, opt_obj);
@@ -6177,7 +6271,7 @@ goog.array.findIndex = function(arr, f, opt_obj) {
   var l = arr.length;  // must be fixed during loop... see docs
   var arr2 = goog.isString(arr) ? arr.split('') : arr;
   for (var i = 0; i < l; i++) {
-    if (i in arr2 && f.call(opt_obj, arr2[i], i, arr)) {
+    if (i in arr2 && f.call(/** @type {?} */ (opt_obj), arr2[i], i, arr)) {
       return i;
     }
   }
@@ -6223,7 +6317,7 @@ goog.array.findIndexRight = function(arr, f, opt_obj) {
   var l = arr.length;  // must be fixed during loop... see docs
   var arr2 = goog.isString(arr) ? arr.split('') : arr;
   for (var i = l - 1; i >= 0; i--) {
-    if (i in arr2 && f.call(opt_obj, arr2[i], i, arr)) {
+    if (i in arr2 && f.call(/** @type {?} */ (opt_obj), arr2[i], i, arr)) {
       return i;
     }
   }
@@ -6355,7 +6449,7 @@ goog.array.removeAt = function(arr, i) {
   // use generic form of splice
   // splice returns the removed items and if successful the length of that
   // will be 1
-  return goog.array.ARRAY_PROTOTYPE_.splice.call(arr, i, 1).length == 1;
+  return Array.prototype.splice.call(arr, i, 1).length == 1;
 };
 
 
@@ -6396,7 +6490,7 @@ goog.array.removeIf = function(arr, f, opt_obj) {
 goog.array.removeAllIf = function(arr, f, opt_obj) {
   var removedCount = 0;
   goog.array.forEachRight(arr, function(val, index) {
-    if (f.call(opt_obj, val, index, arr)) {
+    if (f.call(/** @type {?} */ (opt_obj), val, index, arr)) {
       if (goog.array.removeAt(arr, index)) {
         removedCount++;
       }
@@ -6434,8 +6528,8 @@ goog.array.removeAllIf = function(arr, f, opt_obj) {
  * @return {!Array<?>} The new resultant array.
  */
 goog.array.concat = function(var_args) {
-  return goog.array.ARRAY_PROTOTYPE_.concat.apply(
-      goog.array.ARRAY_PROTOTYPE_, arguments);
+  return Array.prototype.concat.apply(
+      Array.prototype, arguments);
 };
 
 
@@ -6446,8 +6540,8 @@ goog.array.concat = function(var_args) {
  * @template T
  */
 goog.array.join = function(var_args) {
-  return goog.array.ARRAY_PROTOTYPE_.concat.apply(
-      goog.array.ARRAY_PROTOTYPE_, arguments);
+  return Array.prototype.concat.apply(
+      Array.prototype, arguments);
 };
 
 
@@ -6540,7 +6634,7 @@ goog.array.extend = function(arr1, var_args) {
 goog.array.splice = function(arr, index, howMany, var_args) {
   goog.asserts.assert(arr.length != null);
 
-  return goog.array.ARRAY_PROTOTYPE_.splice.apply(
+  return Array.prototype.splice.apply(
       arr, goog.array.slice(arguments, 1));
 };
 
@@ -6566,9 +6660,9 @@ goog.array.slice = function(arr, start, opt_end) {
   // we could use slice on the arguments object and then use apply instead of
   // testing the length
   if (arguments.length <= 2) {
-    return goog.array.ARRAY_PROTOTYPE_.slice.call(arr, start);
+    return Array.prototype.slice.call(arr, start);
   } else {
-    return goog.array.ARRAY_PROTOTYPE_.slice.call(arr, start, opt_end);
+    return Array.prototype.slice.call(arr, start, opt_end);
   }
 };
 
@@ -6602,8 +6696,8 @@ goog.array.removeDuplicates = function(arr, opt_rv, opt_hashFn) {
   var defaultHashFn = function(item) {
     // Prefix each type with a single character representing the type to
     // prevent conflicting keys (e.g. true and 'true').
-    return goog.isObject(current) ? 'o' + goog.getUid(current) :
-        (typeof current).charAt(0) + current;
+    return goog.isObject(item) ? 'o' + goog.getUid(item) :
+        (typeof item).charAt(0) + item;
   };
   var hashFn = opt_hashFn || defaultHashFn;
 
@@ -6695,22 +6789,20 @@ goog.array.binarySelect = function(arr, evaluator, opt_obj) {
  *
  * Runtime: O(log n)
  *
- * @param {Array<VALUE>|goog.array.ArrayLike} arr The array to be searched.
- * @param {function(TARGET, VALUE): number|
- *         function(this:THIS, VALUE, number, ?): number} compareFn Either an
- *     evaluator or a comparison function, as defined by binarySearch
+ * @param {Array<?>|goog.array.ArrayLike} arr The array to be searched.
+ * @param {function(?, ?, ?): number | function(?, ?): number} compareFn
+ *     Either an evaluator or a comparison function, as defined by binarySearch
  *     and binarySelect above.
  * @param {boolean} isEvaluator Whether the function is an evaluator or a
  *     comparison function.
- * @param {TARGET=} opt_target If the function is a comparison function, then
+ * @param {?=} opt_target If the function is a comparison function, then
  *     this is the target to binary search for.
- * @param {THIS=} opt_selfObj If the function is an evaluator, this is an
-  *    optional this object for the evaluator.
+ * @param {Object=} opt_selfObj If the function is an evaluator, this is an
+ *     optional this object for the evaluator.
  * @return {number} Lowest index of the target value if found, otherwise
  *     (-(insertion point) - 1). The insertion point is where the value should
  *     be inserted into arr to preserve the sorted property.  Return value >= 0
  *     iff target is found.
- * @template THIS, VALUE, TARGET
  * @private
  */
 goog.array.binarySearch_ = function(arr, compareFn, isEvaluator, opt_target,
@@ -6724,7 +6816,10 @@ goog.array.binarySearch_ = function(arr, compareFn, isEvaluator, opt_target,
     if (isEvaluator) {
       compareResult = compareFn.call(opt_selfObj, arr[middle], middle, arr);
     } else {
-      compareResult = compareFn(opt_target, arr[middle]);
+      // NOTE(dimvar): To avoid this cast, we'd have to use function overloading
+      // for the type of binarySearch_, which the type system can't express yet.
+      compareResult = /** @type {function(?, ?): number} */ (
+          compareFn)(opt_target, arr[middle]);
     }
     if (compareResult > 0) {
       left = middle + 1;
@@ -6817,8 +6912,7 @@ goog.array.stableSort = function(arr, opt_compareFn) {
  *     and return a negative number, zero, or a positive number depending on
  *     whether the first argument is less than, equal to, or greater than the
  *     second.
- * @template T
- * @template K
+ * @template T,K
  */
 goog.array.sortByKey = function(arr, keyFn, opt_compareFn) {
   var keyCompareFn = opt_compareFn || goog.array.defaultCompare;
@@ -7029,7 +7123,7 @@ goog.array.bucket = function(array, sorter, opt_obj) {
 
   for (var i = 0; i < array.length; i++) {
     var value = array[i];
-    var key = sorter.call(opt_obj, value, i, array);
+    var key = sorter.call(/** @type {?} */ (opt_obj), value, i, array);
     if (goog.isDef(key)) {
       // Push the value to the right bucket, creating it if necessary.
       var bucket = buckets[key] || (buckets[key] = []);
@@ -7060,7 +7154,7 @@ goog.array.bucket = function(array, sorter, opt_obj) {
 goog.array.toObject = function(arr, keyFunc, opt_obj) {
   var ret = {};
   goog.array.forEach(arr, function(element, index) {
-    ret[keyFunc.call(opt_obj, element, index, arr)] = element;
+    ret[keyFunc.call(/** @type {?} */ (opt_obj), element, index, arr)] = element;
   });
   return ret;
 };
@@ -7180,9 +7274,9 @@ goog.array.rotate = function(array, n) {
   if (array.length) {
     n %= array.length;
     if (n > 0) {
-      goog.array.ARRAY_PROTOTYPE_.unshift.apply(array, array.splice(-n, n));
+      Array.prototype.unshift.apply(array, array.splice(-n, n));
     } else if (n < 0) {
-      goog.array.ARRAY_PROTOTYPE_.push.apply(array, array.splice(0, -n));
+      Array.prototype.push.apply(array, array.splice(0, -n));
     }
   }
   return array;
@@ -7203,9 +7297,9 @@ goog.array.moveItem = function(arr, fromIndex, toIndex) {
   goog.asserts.assert(fromIndex >= 0 && fromIndex < arr.length);
   goog.asserts.assert(toIndex >= 0 && toIndex < arr.length);
   // Remove 1 item at fromIndex.
-  var removedItems = goog.array.ARRAY_PROTOTYPE_.splice.call(arr, fromIndex, 1);
+  var removedItems = Array.prototype.splice.call(arr, fromIndex, 1);
   // Insert the removed item at toIndex.
-  goog.array.ARRAY_PROTOTYPE_.splice.call(arr, toIndex, 0, removedItems[0]);
+  Array.prototype.splice.call(arr, toIndex, 0, removedItems[0]);
   // We don't use goog.array.insertAt and goog.array.removeAt, because they're
   // significantly slower than splice.
 };
@@ -7229,18 +7323,20 @@ goog.array.zip = function(var_args) {
     return [];
   }
   var result = [];
-  for (var i = 0; true; i++) {
+  var minLen = arguments[0].length;
+  for (var i = 1; i < arguments.length; i++) {
+    if (arguments[i].length < minLen) {
+      minLen = arguments[i].length;
+    }
+  }
+  for (var i = 0; i < minLen; i++) {
     var value = [];
     for (var j = 0; j < arguments.length; j++) {
-      var arr = arguments[j];
-      // If i is larger than the array length, this is the shortest array.
-      if (i >= arr.length) {
-        return result;
-      }
-      value.push(arr[i]);
+      value.push(arguments[j][i]);
     }
     result.push(value);
   }
+  return result;
 };
 
 
@@ -7528,7 +7624,7 @@ goog.require('goog.proto2.FieldDescriptor');
 goog.proto2.Message = function() {
   /**
    * Stores the field values in this message. Keyed by the tag of the fields.
-   * @type {*}
+   * @type {!Object}
    * @private
    */
   this.values_ = {};
@@ -7593,22 +7689,6 @@ goog.proto2.Message.FieldType = {
 
 
 /**
- * All instances of goog.proto2.Message should have a static descriptorObj_
- * property. This is a JSON representation of a Descriptor. The real Descriptor
- * will be deserialized lazily in the getDescriptor() method.
- *
- * This declaration is just here for documentation purposes.
- * goog.proto2.Message does not have its own descriptor.
- *
- * TODO(user): Delete after components update for cl/76695317.
- *
- * @type {undefined}
- * @private
- */
-goog.proto2.Message.descriptorObj_;
-
-
-/**
  * All instances of goog.proto2.Message should have a static descriptor_
  * property. The Descriptor will be deserialized lazily in the getDescriptor()
  * method.
@@ -7629,7 +7709,7 @@ goog.proto2.Message.descriptor_;
  * @param {goog.proto2.LazyDeserializer} deserializer The lazy deserializer to
  *   use to decode the data on the fly.
  *
- * @param {*} data The data to decode/deserialize.
+ * @param {?} data The data to decode/deserialize.
  */
 goog.proto2.Message.prototype.initializeForLazyDeserializer = function(
     deserializer, data) {
@@ -7683,20 +7763,9 @@ goog.proto2.Message.prototype.forEachUnknown = function(callback, opt_scope) {
  *
  * This only works if we assume people never subclass protobufs.
  *
- * TODO(user): Replace with goog.abstractMethod after components update
- *     with cl/76695317.
- *
  * @return {!goog.proto2.Descriptor} The descriptor.
  */
-goog.proto2.Message.prototype.getDescriptor = function() {
-  // NOTE(nicksantos): These sorts of indirect references to descriptor
-  // through this.constructor are fragile. See the comments
-  // in set$Metadata for more info.
-  var Ctor = this.constructor;
-  return Ctor.descriptor_ ||
-      (Ctor.descriptor_ = goog.proto2.Message.createDescriptor(
-          Ctor, Ctor.descriptorObj_));
-};
+goog.proto2.Message.prototype.getDescriptor = goog.abstractMethod;
 
 
 /**
@@ -7760,7 +7829,7 @@ goog.proto2.Message.prototype.countOf = function(field) {
  * @param {number=} opt_index If the field is repeated, the index to use when
  *     looking up the value.
  *
- * @return {*} The value found or null if none.
+ * @return {?} The value found or null if none.
  */
 goog.proto2.Message.prototype.get = function(field, opt_index) {
   goog.asserts.assert(
@@ -7780,7 +7849,7 @@ goog.proto2.Message.prototype.get = function(field, opt_index) {
  * @param {number=} opt_index If the field is repeated, the index to use when
  *     looking up the value.
  *
- * @return {*} The value found or the default if none.
+ * @return {?} The value found or the default if none.
  */
 goog.proto2.Message.prototype.getOrDefault = function(field, opt_index) {
   goog.asserts.assert(
@@ -7841,7 +7910,7 @@ goog.proto2.Message.prototype.clear = function(field) {
 
 /**
  * Compares this message with another one ignoring the unknown fields.
- * @param {*} other The other message.
+ * @param {?} other The other message.
  * @return {boolean} Whether they are equal. Returns false if the {@code other}
  *     argument is a different type of message or not a message.
  */
@@ -8021,7 +8090,7 @@ goog.proto2.Message.prototype.has$Value = function(tag) {
  * value.
  *
  * @param {number} tag The tag number.
- * @return {*} The corresponding value, if any.
+ * @return {?} The corresponding value, if any.
  * @private
  */
 goog.proto2.Message.prototype.getValueForTag_ = function(tag) {
@@ -8036,7 +8105,7 @@ goog.proto2.Message.prototype.getValueForTag_ = function(tag) {
   if (this.lazyDeserializer_) {
     // If the tag is not deserialized, then we must do so now. Deserialize
     // the field's value via the deserializer.
-    if (!(tag in this.deserializedFields_)) {
+    if (!(tag in /** @type {!Object} */ (this.deserializedFields_))) {
       var deserializedValue = this.lazyDeserializer_.deserializeField(
           this, this.fields_[tag], value);
       this.deserializedFields_[tag] = deserializedValue;
@@ -8060,7 +8129,7 @@ goog.proto2.Message.prototype.getValueForTag_ = function(tag) {
  * @param {number=} opt_index If the field is a repeated field, the index
  *     at which to get the value.
  *
- * @return {*} The value found or null for none.
+ * @return {?} The value found or null for none.
  * @protected
  */
 goog.proto2.Message.prototype.get$Value = function(tag, opt_index) {
@@ -8089,7 +8158,7 @@ goog.proto2.Message.prototype.get$Value = function(tag, opt_index) {
  * @param {number=} opt_index If the field is a repeated field, the index
  *     at which to get the value.
  *
- * @return {*} The value found or the default value if none set.
+ * @return {?} The value found or the default value if none set.
  * @protected
  */
 goog.proto2.Message.prototype.get$ValueOrDefault = function(tag, opt_index) {
@@ -8110,12 +8179,12 @@ goog.proto2.Message.prototype.get$ValueOrDefault = function(tag, opt_index) {
  *
  * @param {number} tag The field's tag index.
  *
- * @return {!Array<*>} The values found. If none, returns an empty array.
+ * @return {!Array<?>} The values found. If none, returns an empty array.
  * @protected
  */
 goog.proto2.Message.prototype.array$Values = function(tag) {
   var value = this.getValueForTag_(tag);
-  return /** @type {Array<*>} */ (value) || [];
+  return value || [];
 };
 
 
@@ -8199,7 +8268,7 @@ goog.proto2.Message.prototype.checkFieldType_ = function(field, value) {
   if (field.getFieldType() == goog.proto2.FieldDescriptor.FieldType.ENUM) {
     goog.asserts.assertNumber(value);
   } else {
-    goog.asserts.assert(value.constructor == field.getNativeType());
+    goog.asserts.assert(Object(value).constructor == field.getNativeType());
   }
 };
 
@@ -8243,31 +8312,6 @@ goog.proto2.Message.createDescriptor = function(messageType, metadataObj) {
   return new goog.proto2.Descriptor(messageType, descriptorInfo, fields);
 };
 
-
-/**
- * Sets the metadata that represents the definition of this message.
- *
- * GENERATED CODE USE ONLY. Called when constructing message classes.
- *
- * TODO(user): Delete after components update with cl/76695317.
- *
- * @param {!Function} messageType Constructor for the
- *     message type to which this metadata applies.
- * @param {Object} metadataObj The object containing the metadata.
- */
-goog.proto2.Message.set$Metadata = function(messageType, metadataObj) {
-  // NOTE(nicksantos): JSCompiler's type-based optimizations really do not
-  // like indirectly defined methods (both prototype methods and
-  // static methods). This is very fragile in compiled code. I think it only
-  // really works by accident, and is highly likely to break in the future.
-  messageType.descriptorObj_ = metadataObj;
-  messageType.getDescriptor = function() {
-    // The descriptor is created lazily when we instantiate a new instance.
-    return messageType.descriptor_ ||
-        (new messageType()).getDescriptor();
-  };
-};
-
 /**
  * @license
  * Protocol Buffer 2 Copyright 2008 Google Inc.
@@ -8307,7 +8351,7 @@ goog.require('goog.proto2.Message');
  * @extends {goog.proto2.Message}
  */
 i18n.phonenumbers.NumberFormat = function() {
-  goog.proto2.Message.apply(this);
+  goog.proto2.Message.call(this);
 };
 goog.inherits(i18n.phonenumbers.NumberFormat, goog.proto2.Message);
 
@@ -8644,7 +8688,7 @@ i18n.phonenumbers.NumberFormat.prototype.clearDomesticCarrierCodeFormattingRule 
  * @extends {goog.proto2.Message}
  */
 i18n.phonenumbers.PhoneNumberDesc = function() {
-  goog.proto2.Message.apply(this);
+  goog.proto2.Message.call(this);
 };
 goog.inherits(i18n.phonenumbers.PhoneNumberDesc, goog.proto2.Message);
 
@@ -8810,6 +8854,108 @@ i18n.phonenumbers.PhoneNumberDesc.prototype.clearExampleNumber = function() {
 };
 
 
+/**
+ * Gets the value of the national_number_matcher_data field.
+ * @return {?string} The value.
+ */
+i18n.phonenumbers.PhoneNumberDesc.prototype.getNationalNumberMatcherData = function() {
+  return /** @type {?string} */ (this.get$Value(7));
+};
+
+
+/**
+ * Gets the value of the national_number_matcher_data field or the default value if not set.
+ * @return {string} The value.
+ */
+i18n.phonenumbers.PhoneNumberDesc.prototype.getNationalNumberMatcherDataOrDefault = function() {
+  return /** @type {string} */ (this.get$ValueOrDefault(7));
+};
+
+
+/**
+ * Sets the value of the national_number_matcher_data field.
+ * @param {string} value The value.
+ */
+i18n.phonenumbers.PhoneNumberDesc.prototype.setNationalNumberMatcherData = function(value) {
+  this.set$Value(7, value);
+};
+
+
+/**
+ * @return {boolean} Whether the national_number_matcher_data field has a value.
+ */
+i18n.phonenumbers.PhoneNumberDesc.prototype.hasNationalNumberMatcherData = function() {
+  return this.has$Value(7);
+};
+
+
+/**
+ * @return {number} The number of values in the national_number_matcher_data field.
+ */
+i18n.phonenumbers.PhoneNumberDesc.prototype.nationalNumberMatcherDataCount = function() {
+  return this.count$Values(7);
+};
+
+
+/**
+ * Clears the values in the national_number_matcher_data field.
+ */
+i18n.phonenumbers.PhoneNumberDesc.prototype.clearNationalNumberMatcherData = function() {
+  this.clear$Field(7);
+};
+
+
+/**
+ * Gets the value of the possible_number_matcher_data field.
+ * @return {?string} The value.
+ */
+i18n.phonenumbers.PhoneNumberDesc.prototype.getPossibleNumberMatcherData = function() {
+  return /** @type {?string} */ (this.get$Value(8));
+};
+
+
+/**
+ * Gets the value of the possible_number_matcher_data field or the default value if not set.
+ * @return {string} The value.
+ */
+i18n.phonenumbers.PhoneNumberDesc.prototype.getPossibleNumberMatcherDataOrDefault = function() {
+  return /** @type {string} */ (this.get$ValueOrDefault(8));
+};
+
+
+/**
+ * Sets the value of the possible_number_matcher_data field.
+ * @param {string} value The value.
+ */
+i18n.phonenumbers.PhoneNumberDesc.prototype.setPossibleNumberMatcherData = function(value) {
+  this.set$Value(8, value);
+};
+
+
+/**
+ * @return {boolean} Whether the possible_number_matcher_data field has a value.
+ */
+i18n.phonenumbers.PhoneNumberDesc.prototype.hasPossibleNumberMatcherData = function() {
+  return this.has$Value(8);
+};
+
+
+/**
+ * @return {number} The number of values in the possible_number_matcher_data field.
+ */
+i18n.phonenumbers.PhoneNumberDesc.prototype.possibleNumberMatcherDataCount = function() {
+  return this.count$Values(8);
+};
+
+
+/**
+ * Clears the values in the possible_number_matcher_data field.
+ */
+i18n.phonenumbers.PhoneNumberDesc.prototype.clearPossibleNumberMatcherData = function() {
+  this.clear$Field(8);
+};
+
+
 
 /**
  * Message PhoneMetadata.
@@ -8817,7 +8963,7 @@ i18n.phonenumbers.PhoneNumberDesc.prototype.clearExampleNumber = function() {
  * @extends {goog.proto2.Message}
  */
 i18n.phonenumbers.PhoneMetadata = function() {
-  goog.proto2.Message.apply(this);
+  goog.proto2.Message.call(this);
 };
 goog.inherits(i18n.phonenumbers.PhoneMetadata, goog.proto2.Message);
 
@@ -10229,14 +10375,13 @@ i18n.phonenumbers.PhoneMetadata.prototype.clearLeadingZeroPossible = function() 
 };
 
 
-
 /**
  * Message PhoneMetadataCollection.
  * @constructor
  * @extends {goog.proto2.Message}
  */
 i18n.phonenumbers.PhoneMetadataCollection = function() {
-  goog.proto2.Message.apply(this);
+  goog.proto2.Message.call(this);
 };
 goog.inherits(i18n.phonenumbers.PhoneMetadataCollection, goog.proto2.Message);
 
@@ -10311,246 +10456,305 @@ i18n.phonenumbers.PhoneMetadataCollection.prototype.clearMetadata = function() {
 };
 
 
-goog.proto2.Message.set$Metadata(i18n.phonenumbers.NumberFormat, {
-  0: {
-    name: 'NumberFormat',
-    fullName: 'i18n.phonenumbers.NumberFormat'
-  },
-  1: {
-    name: 'pattern',
-    required: true,
-    fieldType: goog.proto2.Message.FieldType.STRING,
-    type: String
-  },
-  2: {
-    name: 'format',
-    required: true,
-    fieldType: goog.proto2.Message.FieldType.STRING,
-    type: String
-  },
-  3: {
-    name: 'leading_digits_pattern',
-    repeated: true,
-    fieldType: goog.proto2.Message.FieldType.STRING,
-    type: String
-  },
-  4: {
-    name: 'national_prefix_formatting_rule',
-    fieldType: goog.proto2.Message.FieldType.STRING,
-    type: String
-  },
-  6: {
-    name: 'national_prefix_optional_when_formatting',
-    fieldType: goog.proto2.Message.FieldType.BOOL,
-    type: Boolean
-  },
-  5: {
-    name: 'domestic_carrier_code_formatting_rule',
-    fieldType: goog.proto2.Message.FieldType.STRING,
-    type: String
+/** @override */
+i18n.phonenumbers.NumberFormat.prototype.getDescriptor = function() {
+  if (!i18n.phonenumbers.NumberFormat.descriptor_) {
+    // The descriptor is created lazily when we instantiate a new instance.
+    var descriptorObj = {
+      0: {
+        name: 'NumberFormat',
+        fullName: 'i18n.phonenumbers.NumberFormat'
+      },
+      1: {
+        name: 'pattern',
+        required: true,
+        fieldType: goog.proto2.Message.FieldType.STRING,
+        type: String
+      },
+      2: {
+        name: 'format',
+        required: true,
+        fieldType: goog.proto2.Message.FieldType.STRING,
+        type: String
+      },
+      3: {
+        name: 'leading_digits_pattern',
+        repeated: true,
+        fieldType: goog.proto2.Message.FieldType.STRING,
+        type: String
+      },
+      4: {
+        name: 'national_prefix_formatting_rule',
+        fieldType: goog.proto2.Message.FieldType.STRING,
+        type: String
+      },
+      6: {
+        name: 'national_prefix_optional_when_formatting',
+        fieldType: goog.proto2.Message.FieldType.BOOL,
+        type: Boolean
+      },
+      5: {
+        name: 'domestic_carrier_code_formatting_rule',
+        fieldType: goog.proto2.Message.FieldType.STRING,
+        type: String
+      }
+    };
+    i18n.phonenumbers.NumberFormat.descriptor_ =
+        goog.proto2.Message.createDescriptor(
+             i18n.phonenumbers.NumberFormat, descriptorObj);
   }
-});
+  return i18n.phonenumbers.NumberFormat.descriptor_;
+};
 
 
-goog.proto2.Message.set$Metadata(i18n.phonenumbers.PhoneNumberDesc, {
-  0: {
-    name: 'PhoneNumberDesc',
-    fullName: 'i18n.phonenumbers.PhoneNumberDesc'
-  },
-  2: {
-    name: 'national_number_pattern',
-    fieldType: goog.proto2.Message.FieldType.STRING,
-    type: String
-  },
-  3: {
-    name: 'possible_number_pattern',
-    fieldType: goog.proto2.Message.FieldType.STRING,
-    type: String
-  },
-  6: {
-    name: 'example_number',
-    fieldType: goog.proto2.Message.FieldType.STRING,
-    type: String
+// Export getDescriptor static function robust to minification.
+i18n.phonenumbers.NumberFormat['ctor'] = i18n.phonenumbers.NumberFormat;
+i18n.phonenumbers.NumberFormat['ctor'].getDescriptor =
+    i18n.phonenumbers.NumberFormat.prototype.getDescriptor;
+
+
+/** @override */
+i18n.phonenumbers.PhoneNumberDesc.prototype.getDescriptor = function() {
+  if (!i18n.phonenumbers.PhoneNumberDesc.descriptor_) {
+    // The descriptor is created lazily when we instantiate a new instance.
+    var descriptorObj = {
+      0: {
+        name: 'PhoneNumberDesc',
+        fullName: 'i18n.phonenumbers.PhoneNumberDesc'
+      },
+      2: {
+        name: 'national_number_pattern',
+        fieldType: goog.proto2.Message.FieldType.STRING,
+        type: String
+      },
+      3: {
+        name: 'possible_number_pattern',
+        fieldType: goog.proto2.Message.FieldType.STRING,
+        type: String
+      },
+      6: {
+        name: 'example_number',
+        fieldType: goog.proto2.Message.FieldType.STRING,
+        type: String
+      },
+      7: {
+        name: 'national_number_matcher_data',
+        fieldType: goog.proto2.Message.FieldType.BYTES,
+        type: String
+      },
+      8: {
+        name: 'possible_number_matcher_data',
+        fieldType: goog.proto2.Message.FieldType.BYTES,
+        type: String
+      }
+    };
+    i18n.phonenumbers.PhoneNumberDesc.descriptor_ =
+        goog.proto2.Message.createDescriptor(
+             i18n.phonenumbers.PhoneNumberDesc, descriptorObj);
   }
-});
+  return i18n.phonenumbers.PhoneNumberDesc.descriptor_;
+};
 
 
-goog.proto2.Message.set$Metadata(i18n.phonenumbers.PhoneMetadata, {
-  0: {
-    name: 'PhoneMetadata',
-    fullName: 'i18n.phonenumbers.PhoneMetadata'
-  },
-  1: {
-    name: 'general_desc',
-    required: true,
-    fieldType: goog.proto2.Message.FieldType.MESSAGE,
-    type: i18n.phonenumbers.PhoneNumberDesc
-  },
-  2: {
-    name: 'fixed_line',
-    required: true,
-    fieldType: goog.proto2.Message.FieldType.MESSAGE,
-    type: i18n.phonenumbers.PhoneNumberDesc
-  },
-  3: {
-    name: 'mobile',
-    required: true,
-    fieldType: goog.proto2.Message.FieldType.MESSAGE,
-    type: i18n.phonenumbers.PhoneNumberDesc
-  },
-  4: {
-    name: 'toll_free',
-    required: true,
-    fieldType: goog.proto2.Message.FieldType.MESSAGE,
-    type: i18n.phonenumbers.PhoneNumberDesc
-  },
-  5: {
-    name: 'premium_rate',
-    required: true,
-    fieldType: goog.proto2.Message.FieldType.MESSAGE,
-    type: i18n.phonenumbers.PhoneNumberDesc
-  },
-  6: {
-    name: 'shared_cost',
-    required: true,
-    fieldType: goog.proto2.Message.FieldType.MESSAGE,
-    type: i18n.phonenumbers.PhoneNumberDesc
-  },
-  7: {
-    name: 'personal_number',
-    required: true,
-    fieldType: goog.proto2.Message.FieldType.MESSAGE,
-    type: i18n.phonenumbers.PhoneNumberDesc
-  },
-  8: {
-    name: 'voip',
-    required: true,
-    fieldType: goog.proto2.Message.FieldType.MESSAGE,
-    type: i18n.phonenumbers.PhoneNumberDesc
-  },
-  21: {
-    name: 'pager',
-    required: true,
-    fieldType: goog.proto2.Message.FieldType.MESSAGE,
-    type: i18n.phonenumbers.PhoneNumberDesc
-  },
-  25: {
-    name: 'uan',
-    required: true,
-    fieldType: goog.proto2.Message.FieldType.MESSAGE,
-    type: i18n.phonenumbers.PhoneNumberDesc
-  },
-  27: {
-    name: 'emergency',
-    required: true,
-    fieldType: goog.proto2.Message.FieldType.MESSAGE,
-    type: i18n.phonenumbers.PhoneNumberDesc
-  },
-  28: {
-    name: 'voicemail',
-    required: true,
-    fieldType: goog.proto2.Message.FieldType.MESSAGE,
-    type: i18n.phonenumbers.PhoneNumberDesc
-  },
-  24: {
-    name: 'no_international_dialling',
-    required: true,
-    fieldType: goog.proto2.Message.FieldType.MESSAGE,
-    type: i18n.phonenumbers.PhoneNumberDesc
-  },
-  9: {
-    name: 'id',
-    required: true,
-    fieldType: goog.proto2.Message.FieldType.STRING,
-    type: String
-  },
-  10: {
-    name: 'country_code',
-    required: true,
-    fieldType: goog.proto2.Message.FieldType.INT32,
-    type: Number
-  },
-  11: {
-    name: 'international_prefix',
-    required: true,
-    fieldType: goog.proto2.Message.FieldType.STRING,
-    type: String
-  },
-  17: {
-    name: 'preferred_international_prefix',
-    fieldType: goog.proto2.Message.FieldType.STRING,
-    type: String
-  },
-  12: {
-    name: 'national_prefix',
-    fieldType: goog.proto2.Message.FieldType.STRING,
-    type: String
-  },
-  13: {
-    name: 'preferred_extn_prefix',
-    fieldType: goog.proto2.Message.FieldType.STRING,
-    type: String
-  },
-  15: {
-    name: 'national_prefix_for_parsing',
-    fieldType: goog.proto2.Message.FieldType.STRING,
-    type: String
-  },
-  16: {
-    name: 'national_prefix_transform_rule',
-    fieldType: goog.proto2.Message.FieldType.STRING,
-    type: String
-  },
-  18: {
-    name: 'same_mobile_and_fixed_line_pattern',
-    fieldType: goog.proto2.Message.FieldType.BOOL,
-    defaultValue: false,
-    type: Boolean
-  },
-  19: {
-    name: 'number_format',
-    repeated: true,
-    fieldType: goog.proto2.Message.FieldType.MESSAGE,
-    type: i18n.phonenumbers.NumberFormat
-  },
-  20: {
-    name: 'intl_number_format',
-    repeated: true,
-    fieldType: goog.proto2.Message.FieldType.MESSAGE,
-    type: i18n.phonenumbers.NumberFormat
-  },
-  22: {
-    name: 'main_country_for_code',
-    fieldType: goog.proto2.Message.FieldType.BOOL,
-    defaultValue: false,
-    type: Boolean
-  },
-  23: {
-    name: 'leading_digits',
-    fieldType: goog.proto2.Message.FieldType.STRING,
-    type: String
-  },
-  26: {
-    name: 'leading_zero_possible',
-    fieldType: goog.proto2.Message.FieldType.BOOL,
-    defaultValue: false,
-    type: Boolean
+// Export getDescriptor static function robust to minification.
+i18n.phonenumbers.PhoneNumberDesc['ctor'] = i18n.phonenumbers.PhoneNumberDesc;
+i18n.phonenumbers.PhoneNumberDesc['ctor'].getDescriptor =
+    i18n.phonenumbers.PhoneNumberDesc.prototype.getDescriptor;
+
+
+/** @override */
+i18n.phonenumbers.PhoneMetadata.prototype.getDescriptor = function() {
+  if (!i18n.phonenumbers.PhoneMetadata.descriptor_) {
+    // The descriptor is created lazily when we instantiate a new instance.
+    var descriptorObj = {
+      0: {
+        name: 'PhoneMetadata',
+        fullName: 'i18n.phonenumbers.PhoneMetadata'
+      },
+      1: {
+        name: 'general_desc',
+        fieldType: goog.proto2.Message.FieldType.MESSAGE,
+        type: i18n.phonenumbers.PhoneNumberDesc
+      },
+      2: {
+        name: 'fixed_line',
+        fieldType: goog.proto2.Message.FieldType.MESSAGE,
+        type: i18n.phonenumbers.PhoneNumberDesc
+      },
+      3: {
+        name: 'mobile',
+        fieldType: goog.proto2.Message.FieldType.MESSAGE,
+        type: i18n.phonenumbers.PhoneNumberDesc
+      },
+      4: {
+        name: 'toll_free',
+        fieldType: goog.proto2.Message.FieldType.MESSAGE,
+        type: i18n.phonenumbers.PhoneNumberDesc
+      },
+      5: {
+        name: 'premium_rate',
+        fieldType: goog.proto2.Message.FieldType.MESSAGE,
+        type: i18n.phonenumbers.PhoneNumberDesc
+      },
+      6: {
+        name: 'shared_cost',
+        fieldType: goog.proto2.Message.FieldType.MESSAGE,
+        type: i18n.phonenumbers.PhoneNumberDesc
+      },
+      7: {
+        name: 'personal_number',
+        fieldType: goog.proto2.Message.FieldType.MESSAGE,
+        type: i18n.phonenumbers.PhoneNumberDesc
+      },
+      8: {
+        name: 'voip',
+        fieldType: goog.proto2.Message.FieldType.MESSAGE,
+        type: i18n.phonenumbers.PhoneNumberDesc
+      },
+      21: {
+        name: 'pager',
+        fieldType: goog.proto2.Message.FieldType.MESSAGE,
+        type: i18n.phonenumbers.PhoneNumberDesc
+      },
+      25: {
+        name: 'uan',
+        fieldType: goog.proto2.Message.FieldType.MESSAGE,
+        type: i18n.phonenumbers.PhoneNumberDesc
+      },
+      27: {
+        name: 'emergency',
+        fieldType: goog.proto2.Message.FieldType.MESSAGE,
+        type: i18n.phonenumbers.PhoneNumberDesc
+      },
+      28: {
+        name: 'voicemail',
+        fieldType: goog.proto2.Message.FieldType.MESSAGE,
+        type: i18n.phonenumbers.PhoneNumberDesc
+      },
+      24: {
+        name: 'no_international_dialling',
+        fieldType: goog.proto2.Message.FieldType.MESSAGE,
+        type: i18n.phonenumbers.PhoneNumberDesc
+      },
+      9: {
+        name: 'id',
+        required: true,
+        fieldType: goog.proto2.Message.FieldType.STRING,
+        type: String
+      },
+      10: {
+        name: 'country_code',
+        fieldType: goog.proto2.Message.FieldType.INT32,
+        type: Number
+      },
+      11: {
+        name: 'international_prefix',
+        fieldType: goog.proto2.Message.FieldType.STRING,
+        type: String
+      },
+      17: {
+        name: 'preferred_international_prefix',
+        fieldType: goog.proto2.Message.FieldType.STRING,
+        type: String
+      },
+      12: {
+        name: 'national_prefix',
+        fieldType: goog.proto2.Message.FieldType.STRING,
+        type: String
+      },
+      13: {
+        name: 'preferred_extn_prefix',
+        fieldType: goog.proto2.Message.FieldType.STRING,
+        type: String
+      },
+      15: {
+        name: 'national_prefix_for_parsing',
+        fieldType: goog.proto2.Message.FieldType.STRING,
+        type: String
+      },
+      16: {
+        name: 'national_prefix_transform_rule',
+        fieldType: goog.proto2.Message.FieldType.STRING,
+        type: String
+      },
+      18: {
+        name: 'same_mobile_and_fixed_line_pattern',
+        fieldType: goog.proto2.Message.FieldType.BOOL,
+        defaultValue: false,
+        type: Boolean
+      },
+      19: {
+        name: 'number_format',
+        repeated: true,
+        fieldType: goog.proto2.Message.FieldType.MESSAGE,
+        type: i18n.phonenumbers.NumberFormat
+      },
+      20: {
+        name: 'intl_number_format',
+        repeated: true,
+        fieldType: goog.proto2.Message.FieldType.MESSAGE,
+        type: i18n.phonenumbers.NumberFormat
+      },
+      22: {
+        name: 'main_country_for_code',
+        fieldType: goog.proto2.Message.FieldType.BOOL,
+        defaultValue: false,
+        type: Boolean
+      },
+      23: {
+        name: 'leading_digits',
+        fieldType: goog.proto2.Message.FieldType.STRING,
+        type: String
+      },
+      26: {
+        name: 'leading_zero_possible',
+        fieldType: goog.proto2.Message.FieldType.BOOL,
+        defaultValue: false,
+        type: Boolean
+      }
+    };
+    i18n.phonenumbers.PhoneMetadata.descriptor_ =
+        goog.proto2.Message.createDescriptor(
+             i18n.phonenumbers.PhoneMetadata, descriptorObj);
   }
-});
+  return i18n.phonenumbers.PhoneMetadata.descriptor_;
+};
 
 
-goog.proto2.Message.set$Metadata(i18n.phonenumbers.PhoneMetadataCollection, {
-  0: {
-    name: 'PhoneMetadataCollection',
-    fullName: 'i18n.phonenumbers.PhoneMetadataCollection'
-  },
-  1: {
-    name: 'metadata',
-    repeated: true,
-    fieldType: goog.proto2.Message.FieldType.MESSAGE,
-    type: i18n.phonenumbers.PhoneMetadata
+// Export getDescriptor static function robust to minification.
+i18n.phonenumbers.PhoneMetadata['ctor'] = i18n.phonenumbers.PhoneMetadata;
+i18n.phonenumbers.PhoneMetadata['ctor'].getDescriptor =
+    i18n.phonenumbers.PhoneMetadata.prototype.getDescriptor;
+
+
+/** @override */
+i18n.phonenumbers.PhoneMetadataCollection.prototype.getDescriptor = function() {
+  if (!i18n.phonenumbers.PhoneMetadataCollection.descriptor_) {
+    // The descriptor is created lazily when we instantiate a new instance.
+    var descriptorObj = {
+      0: {
+        name: 'PhoneMetadataCollection',
+        fullName: 'i18n.phonenumbers.PhoneMetadataCollection'
+      },
+      1: {
+        name: 'metadata',
+        repeated: true,
+        fieldType: goog.proto2.Message.FieldType.MESSAGE,
+        type: i18n.phonenumbers.PhoneMetadata
+      }
+    };
+    i18n.phonenumbers.PhoneMetadataCollection.descriptor_ =
+        goog.proto2.Message.createDescriptor(
+             i18n.phonenumbers.PhoneMetadataCollection, descriptorObj);
   }
-});
+  return i18n.phonenumbers.PhoneMetadataCollection.descriptor_;
+};
+
+
+// Export getDescriptor static function robust to minification.
+i18n.phonenumbers.PhoneMetadataCollection['ctor'] = i18n.phonenumbers.PhoneMetadataCollection;
+i18n.phonenumbers.PhoneMetadataCollection['ctor'].getDescriptor =
+    i18n.phonenumbers.PhoneMetadataCollection.prototype.getDescriptor;
 
 /**
  * @license
@@ -10595,7 +10799,7 @@ i18n.phonenumbers.metadata.countryCodeToRegionCodeMap = {
 ,33:["FR"]
 ,34:["ES"]
 ,36:["HU"]
-,39:["IT"]
+,39:["IT","VA"]
 ,40:["RO"]
 ,41:["CH"]
 ,43:["AT"]
@@ -10709,7 +10913,6 @@ i18n.phonenumbers.metadata.countryCodeToRegionCodeMap = {
 ,376:["AD"]
 ,377:["MC"]
 ,378:["SM"]
-,379:["VA"]
 ,380:["UA"]
 ,381:["RS"]
 ,382:["ME"]
@@ -10807,9 +11010,9 @@ i18n.phonenumbers.metadata.countryCodeToRegionCodeMap = {
  * @type {!Object.<string, Array>}
  */
 i18n.phonenumbers.metadata.countryToMetadata = {
-"AC":[,[,,"[2-7]\\d{3,5}","\\d{4,6}"]
-,[,,"(?:[267]\\d|3[0-5]|4[4-69])\\d{2}","\\d{4}",,,"6889"]
-,[,,"5\\d{5}","\\d{6}",,,"501234"]
+"AC":[,[,,"[46]\\d{4}|[01589]\\d{5}","\\d{5,6}"]
+,[,,"6[2-467]\\d{3}","\\d{5}",,,"62889"]
+,[,,"4\\d{4}","\\d{5}",,,"40123"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
@@ -10817,7 +11020,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,[,,"NA","NA"]
 ,"AC",247,"00",,,,,,,,,,[,,"NA","NA"]
 ,,,[,,"NA","NA"]
-,[,,"NA","NA"]
+,[,,"[01589]\\d{5}","\\d{6}",,,"542011"]
 ,,,[,,"NA","NA"]
 ]
 ,"AD":[,[,,"(?:[346-9]|180)\\d{5}","\\d{6,8}"]
@@ -10862,15 +11065,13 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"AF":[,[,,"[2-7]\\d{8}","\\d{7,9}"]
 ,[,,"(?:[25][0-8]|[34][0-4]|6[0-5])[2-9]\\d{6}","\\d{7,9}",,,"234567890"]
-,[,,"7(?:[05-9]\\d{7}|29\\d{6})","\\d{9}",,,"701234567"]
+,[,,"7(?:[014-9]\\d{7}|2[89]\\d{6})","\\d{9}",,,"701234567"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
-,"AF",93,"00","0",,,"0",,,,[[,"([2-7]\\d)(\\d{3})(\\d{4})","$1 $2 $3",["[2-6]|7[013-9]"]
-,"0$1","",0]
-,[,"(729)(\\d{3})(\\d{3})","$1 $2 $3",["729"]
+,"AF",93,"00","0",,,"0",,,,[[,"([2-7]\\d)(\\d{3})(\\d{4})","$1 $2 $3",["[2-7]"]
 ,"0$1","",0]
 ]
 ,,[,,"NA","NA"]
@@ -10971,7 +11172,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
-,"AR",54,"00","0",,,"0?(?:(11|2(?:2(?:02?|[13]|2[13-79]|4[1-6]|5[2457]|6[124-8]|7[1-4]|8[13-6]|9[1267])|3(?:02?|1[467]|2[03-6]|3[13-8]|[49][2-6]|5[2-8]|[67])|4(?:7[3-578]|9)|6(?:[0136]|2[24-6]|4[6-8]?|5[15-8])|80|9(?:0[1-3]|[19]|2\\d|3[1-6]|4[02568]?|5[2-4]|6[2-46]|72?|8[23]?))|3(?:3(?:2[79]|6|8[2578])|4(?:0[124-9]|[12]|3[5-8]?|4[24-7]|5[4-68]?|6[02-9]|7[126]|8[2379]?|9[1-36-8])|5(?:1|2[1245]|3[237]?|4[1-46-9]|6[2-4]|7[1-6]|8[2-5]?)|6[24]|7(?:1[1568]|2[15]|3[145]|4[13]|5[14-8]|[069]|7[2-57]|8[126])|8(?:[01]|2[15-7]|3[2578]?|4[13-6]|5[4-8]?|6[1-357-9]|7[36-8]?|8[5-8]?|9[124])))?15)?","9$1",,,[[,"([68]\\d{2})(\\d{3})(\\d{4})","$1-$2-$3",["[68]"]
+,"AR",54,"00","0",,,"0?(?:(11|2(?:2(?:02?|[13]|2[13-79]|4[1-6]|5[2457]|6[124-8]|7[1-4]|8[13-6]|9[1267])|3(?:02?|1[467]|2[03-6]|3[13-8]|[49][2-6]|5[2-8]|[67])|4(?:7[3-578]|9)|6(?:[0136]|2[24-6]|4[6-8]?|5[15-8])|80|9(?:0[1-3]|[19]|2\\d|3[1-6]|4[02568]?|5[2-4]|6[2-46]|72?|8[23]?))|3(?:3(?:2[79]|6|8[2578])|4(?:0[0-24-9]|[12]|3[5-8]?|4[24-7]|5[4-68]?|6[02-9]|7[126]|8[2379]?|9[1-36-8])|5(?:1|2[1245]|3[237]?|4[1-46-9]|6[2-4]|7[1-6]|8[2-5]?)|6[24]|7(?:[069]|1[1568]|2[15]|3[145]|4[13]|5[14-8]|7[2-57]|8[126])|8(?:[01]|2[15-7]|3[2578]?|4[13-6]|5[4-8]?|6[1-357-9]|7[36-8]?|8[5-8]?|9[124])))?15)?","9$1",,,[[,"([68]\\d{2})(\\d{3})(\\d{4})","$1-$2-$3",["[68]"]
 ,"0$1","",0]
 ,[,"(\\d{2})(\\d{4})","$1-$2",["[2-9]"]
 ,"$1","",0]
@@ -10981,13 +11182,13 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,"$1","",0]
 ,[,"(9)(11)(\\d{4})(\\d{4})","$2 15-$3-$4",["911"]
 ,"0$1","",0]
-,[,"(9)(\\d{3})(\\d{3})(\\d{4})","$2 15-$3-$4",["9(?:2[234689]|3[3-8])","9(?:2(?:2[013]|3[067]|49|6[01346]|80|9[147-9])|3(?:36|4[12358]|5[138]|6[24]|7[069]|8[013578]))","9(?:2(?:2[013]|3[067]|49|6[01346]|80|9(?:[179]|4[13479]|8[014-9]))|3(?:36|4[12358]|5(?:[18]|3[014-689])|6[24]|7[069]|8(?:[01]|3[013469]|5[0-39]|7[0-2459]|8[0-49])))"]
+,[,"(9)(\\d{3})(\\d{3})(\\d{4})","$2 15-$3-$4",["9(?:2[234689]|3[3-8])","9(?:2(?:2[013]|3[067]|49|6[01346]|80|9[147-9])|3(?:36|4[1-358]|5[138]|6[24]|7[069]|8[013578]))","9(?:2(?:2(?:0[013-9]|[13])|3(?:0[013-9]|[67])|49|6(?:[0136]|4[0-59])|8|9(?:[19]|44|7[013-9]|8[14]))|3(?:36|4(?:[12]|3[456]|[58]4)|5(?:1|3[0-24-689]|8[46])|6|7[069]|8(?:[01]|34|[578][45])))","9(?:2(?:2(?:0[013-9]|[13])|3(?:0[013-9]|[67])|49|6(?:[0136]|4[0-59])|8|9(?:[19]|44|7[013-9]|8[14]))|3(?:36|4(?:[12]|3(?:4|5[014]|6[1239])|[58]4)|5(?:1|3[0-24-689]|8[46])|6|7[069]|8(?:[01]|34|[578][45])))"]
 ,"0$1","",0]
 ,[,"(9)(\\d{4})(\\d{2})(\\d{4})","$2 15-$3-$4",["9[23]"]
 ,"0$1","",0]
 ,[,"(11)(\\d{4})(\\d{4})","$1 $2-$3",["1"]
 ,"0$1","",1]
-,[,"(\\d{3})(\\d{3})(\\d{4})","$1 $2-$3",["2(?:2[013]|3[067]|49|6[01346]|80|9[147-9])|3(?:36|4[12358]|5[138]|6[24]|7[069]|8[013578])","2(?:2[013]|3[067]|49|6[01346]|80|9(?:[179]|4[13479]|8[014-9]))|3(?:36|4[12358]|5(?:[18]|3[0-689])|6[24]|7[069]|8(?:[01]|3[013469]|5[0-39]|7[0-2459]|8[0-49]))"]
+,[,"(\\d{3})(\\d{3})(\\d{4})","$1 $2-$3",["2(?:2[013]|3[067]|49|6[01346]|80|9[147-9])|3(?:36|4[1-358]|5[138]|6[24]|7[069]|8[013578])","2(?:2(?:0[013-9]|[13])|3(?:0[013-9]|[67])|49|6(?:[0136]|4[0-59])|8|9(?:[19]|44|7[013-9]|8[14]))|3(?:36|4(?:[12]|3[456]|[58]4)|5(?:1|3[0-24-689]|8[46])|6|7[069]|8(?:[01]|34|[578][45]))","2(?:2(?:0[013-9]|[13])|3(?:0[013-9]|[67])|49|6(?:[0136]|4[0-59])|8|9(?:[19]|44|7[013-9]|8[14]))|3(?:36|4(?:[12]|3(?:4|5[014]|6[1239])|[58]4)|5(?:1|3[0-24-689]|8[46])|6|7[069]|8(?:[01]|34|[578][45]))"]
 ,"0$1","",1]
 ,[,"(\\d{4})(\\d{2})(\\d{4})","$1 $2-$3",["[23]"]
 ,"0$1","",1]
@@ -10998,13 +11199,13 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,"0$1","",0]
 ,[,"(9)(11)(\\d{4})(\\d{4})","$1 $2 $3-$4",["911"]
 ]
-,[,"(9)(\\d{3})(\\d{3})(\\d{4})","$1 $2 $3-$4",["9(?:2[234689]|3[3-8])","9(?:2(?:2[013]|3[067]|49|6[01346]|80|9[147-9])|3(?:36|4[12358]|5[138]|6[24]|7[069]|8[013578]))","9(?:2(?:2[013]|3[067]|49|6[01346]|80|9(?:[179]|4[13479]|8[014-9]))|3(?:36|4[12358]|5(?:[18]|3[014-689])|6[24]|7[069]|8(?:[01]|3[013469]|5[0-39]|7[0-2459]|8[0-49])))"]
+,[,"(9)(\\d{3})(\\d{3})(\\d{4})","$1 $2 $3-$4",["9(?:2[234689]|3[3-8])","9(?:2(?:2[013]|3[067]|49|6[01346]|80|9[147-9])|3(?:36|4[1-358]|5[138]|6[24]|7[069]|8[013578]))","9(?:2(?:2(?:0[013-9]|[13])|3(?:0[013-9]|[67])|49|6(?:[0136]|4[0-59])|8|9(?:[19]|44|7[013-9]|8[14]))|3(?:36|4(?:[12]|3[456]|[58]4)|5(?:1|3[0-24-689]|8[46])|6|7[069]|8(?:[01]|34|[578][45])))","9(?:2(?:2(?:0[013-9]|[13])|3(?:0[013-9]|[67])|49|6(?:[0136]|4[0-59])|8|9(?:[19]|44|7[013-9]|8[14]))|3(?:36|4(?:[12]|3(?:4|5[014]|6[1239])|[58]4)|5(?:1|3[0-24-689]|8[46])|6|7[069]|8(?:[01]|34|[578][45])))"]
 ]
 ,[,"(9)(\\d{4})(\\d{2})(\\d{4})","$1 $2 $3-$4",["9[23]"]
 ]
 ,[,"(11)(\\d{4})(\\d{4})","$1 $2-$3",["1"]
 ,"0$1","",1]
-,[,"(\\d{3})(\\d{3})(\\d{4})","$1 $2-$3",["2(?:2[013]|3[067]|49|6[01346]|80|9[147-9])|3(?:36|4[12358]|5[138]|6[24]|7[069]|8[013578])","2(?:2[013]|3[067]|49|6[01346]|80|9(?:[179]|4[13479]|8[014-9]))|3(?:36|4[12358]|5(?:[18]|3[0-689])|6[24]|7[069]|8(?:[01]|3[013469]|5[0-39]|7[0-2459]|8[0-49]))"]
+,[,"(\\d{3})(\\d{3})(\\d{4})","$1 $2-$3",["2(?:2[013]|3[067]|49|6[01346]|80|9[147-9])|3(?:36|4[1-358]|5[138]|6[24]|7[069]|8[013578])","2(?:2(?:0[013-9]|[13])|3(?:0[013-9]|[67])|49|6(?:[0136]|4[0-59])|8|9(?:[19]|44|7[013-9]|8[14]))|3(?:36|4(?:[12]|3[456]|[58]4)|5(?:1|3[0-24-689]|8[46])|6|7[069]|8(?:[01]|34|[578][45]))","2(?:2(?:0[013-9]|[13])|3(?:0[013-9]|[67])|49|6(?:[0136]|4[0-59])|8|9(?:[19]|44|7[013-9]|8[14]))|3(?:36|4(?:[12]|3(?:4|5[014]|6[1239])|[58]4)|5(?:1|3[0-24-689]|8[46])|6|7[069]|8(?:[01]|34|[578][45]))"]
 ,"0$1","",1]
 ,[,"(\\d{4})(\\d{2})(\\d{4})","$1 $2-$3",["[23]"]
 ,"0$1","",1]
@@ -11016,7 +11217,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"AS":[,[,,"[5689]\\d{9}","\\d{7}(?:\\d{3})?"]
 ,[,,"6846(?:22|33|44|55|77|88|9[19])\\d{4}","\\d{7}(?:\\d{3})?",,,"6846221234"]
-,[,,"684(?:25[2468]|7(?:3[13]|70))\\d{4}","\\d{10}",,,"6847331234"]
+,[,,"684(?:2(?:5[2468]|72)|7(?:3[13]|70))\\d{4}","\\d{10}",,,"6847331234"]
 ,[,,"8(?:00|44|55|66|77|88)[2-9]\\d{6}","\\d{10}",,,"8002123456"]
 ,[,,"900[2-9]\\d{6}","\\d{10}",,,"9002123456"]
 ,[,,"NA","NA"]
@@ -11032,7 +11233,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,[,,"6(?:44|5[0-3579]|6[013-9]|[7-9]\\d)\\d{4,10}","\\d{7,13}",,,"644123456"]
 ,[,,"80[02]\\d{6,10}","\\d{9,13}",,,"800123456"]
 ,[,,"(?:711|9(?:0[01]|3[019]))\\d{6,10}","\\d{9,13}",,,"900123456"]
-,[,,"8(?:10|2[018])\\d{6,10}","\\d{9,13}",,,"810123456"]
+,[,,"8(?:10\\d|2(?:[01]\\d|8\\d?))\\d{5,9}","\\d{8,13}",,,"810123456"]
 ,[,,"NA","NA"]
 ,[,,"780\\d{6,10}","\\d{9,13}",,,"780123456"]
 ,"AT",43,"00","0",,,"0",,,,[[,"(1)(\\d{3,12})","$1 $2",["1"]
@@ -11055,7 +11256,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"AU":[,[,,"[1-578]\\d{5,9}","\\d{6,10}"]
 ,[,,"[237]\\d{8}|8(?:[68]\\d{3}|7[0-69]\\d{2}|9(?:[02-9]\\d{2}|1(?:[0-57-9]\\d|6[0135-9])))\\d{4}","\\d{8,9}",,,"212345678"]
-,[,,"14(?:5\\d|71)\\d{5}|4(?:[0-2]\\d|3[0-57-9]|4[47-9]|5[0-25-9]|6[6-9]|7[03-9]|8[17-9]|9[017-9])\\d{6}","\\d{9}",,,"412345678"]
+,[,,"14(?:5\\d|71)\\d{5}|4(?:[0-2]\\d|3[0-57-9]|4[47-9]|5[0-25-9]|6[6-9]|7[03-9]|8[147-9]|9[017-9])\\d{6}","\\d{9}",,,"412345678"]
 ,[,,"180(?:0\\d{3}|2)\\d{3}","\\d{7,10}",,,"1800123456"]
 ,[,,"190[0126]\\d{6}","\\d{10}",,,"1900123456"]
 ,[,,"13(?:00\\d{2})?\\d{4}","\\d{6,10}",,,"1300123456"]
@@ -11152,20 +11353,20 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,,,[,,"NA","NA"]
 ]
 ,"BB":[,[,,"[2589]\\d{9}","\\d{7}(?:\\d{3})?"]
-,[,,"246[2-9]\\d{6}","\\d{7}(?:\\d{3})?",,,"2462345678"]
-,[,,"246(?:(?:2[346]|45|82)\\d|25[0-4])\\d{4}","\\d{10}",,,"2462501234"]
+,[,,"246(?:2(?:2[78]|7[0-4])|4(?:1[024-6]|2\\d|3[2-9])|5(?:20|[34]\\d|54|7[1-3])|6(?:2\\d|38)|7(?:37|57)|9(?:1[89]|63))\\d{4}","\\d{7}(?:\\d{3})?",,,"2464123456"]
+,[,,"246(?:2(?:[356]\\d|4[0-57-9]|8[0-79])|45\\d|8(?:[2-5]\\d|83))\\d{4}","\\d{10}",,,"2462501234"]
 ,[,,"8(?:00|44|55|66|77|88)[2-9]\\d{6}","\\d{10}",,,"8002123456"]
-,[,,"900[2-9]\\d{6}","\\d{10}",,,"9002123456"]
+,[,,"900\\d{7}|246976\\d{4}","\\d{10}",,,"9002123456"]
 ,[,,"NA","NA"]
-,[,,"5(?:00|33|44|66|77)[2-9]\\d{6}","\\d{10}",,,"5002345678"]
-,[,,"NA","NA"]
+,[,,"5(?:00|33|44|66|77)[2-9]\\d{3}","\\d{10}",,,"5002345678"]
+,[,,"24631\\d{5}","\\d{10}",,,"2463101234"]
 ,"BB",1,"011","1",,,"1",,,,,,[,,"NA","NA"]
 ,,"246",[,,"NA","NA"]
-,[,,"NA","NA"]
+,[,,"246(?:292|41[7-9]|43[01])\\d{4}","\\d{10}",,,"2464301234"]
 ,,,[,,"NA","NA"]
 ]
 ,"BD":[,[,,"[2-79]\\d{5,9}|1\\d{9}|8[0-7]\\d{4,8}","\\d{6,10}"]
-,[,,"2(?:7(?:1[0-267]|2[0-289]|3[0-29]|[46][01]|5[1-3]|7[017]|91)|8(?:0[125]|[139][1-6]|2[0157-9]|6[1-35]|7[1-5]|8[1-8])|9(?:0[0-2]|1[1-4]|2[568]|3[3-6]|5[5-7]|6[0167]|7[15]|8[0146-8]))\\d{4}|3(?:12?[5-7]\\d{2}|0(?:2(?:[025-79]\\d|[348]\\d{1,2})|3(?:[2-4]\\d|[56]\\d?))|2(?:1\\d{2}|2(?:[12]\\d|[35]\\d{1,2}|4\\d?))|3(?:1\\d{2}|2(?:[2356]\\d|4\\d{1,2}))|4(?:1\\d{2}|2(?:2\\d{1,2}|[47]|5\\d{2}))|5(?:1\\d{2}|29)|[67]1\\d{2}|8(?:1\\d{2}|2(?:2\\d{2}|3|4\\d)))\\d{3}|4(?:0(?:2(?:[09]\\d|7)|33\\d{2})|1\\d{3}|2(?:1\\d{2}|2(?:[25]\\d?|[348]\\d|[67]\\d{1,2}))|3(?:1\\d{2}(?:\\d{2})?|2(?:[045]\\d|[236-9]\\d{1,2})|32\\d{2})|4(?:[18]\\d{2}|2(?:[2-46]\\d{2}|3)|5[25]\\d{2})|5(?:1\\d{2}|2(?:3\\d|5))|6(?:[18]\\d{2}|2(?:3(?:\\d{2})?|[46]\\d{1,2}|5\\d{2}|7\\d)|5(?:3\\d?|4\\d|[57]\\d{1,2}|6\\d{2}|8))|71\\d{2}|8(?:[18]\\d{2}|23\\d{2}|54\\d{2})|9(?:[18]\\d{2}|2[2-5]\\d{2}|53\\d{1,2}))\\d{3}|5(?:02[03489]\\d{2}|1\\d{2}|2(?:1\\d{2}|2(?:2(?:\\d{2})?|[457]\\d{2}))|3(?:1\\d{2}|2(?:[37](?:\\d{2})?|[569]\\d{2}))|4(?:1\\d{2}|2[46]\\d{2})|5(?:1\\d{2}|26\\d{1,2})|6(?:[18]\\d{2}|2|53\\d{2})|7(?:1|24)\\d{2}|8(?:1|26)\\d{2}|91\\d{2})\\d{3}|6(?:0(?:1\\d{2}|2(?:3\\d{2}|4\\d{1,2}))|2(?:2[2-5]\\d{2}|5(?:[3-5]\\d{2}|7)|8\\d{2})|3(?:1|2[3478])\\d{2}|4(?:1|2[34])\\d{2}|5(?:1|2[47])\\d{2}|6(?:[18]\\d{2}|6(?:2(?:2\\d|[34]\\d{2})|5(?:[24]\\d{2}|3\\d|5\\d{1,2})))|72[2-5]\\d{2}|8(?:1\\d{2}|2[2-5]\\d{2})|9(?:1\\d{2}|2[2-6]\\d{2}))\\d{3}|7(?:(?:02|[3-589]1|6[12]|72[24])\\d{2}|21\\d{3}|32)\\d{3}|8(?:(?:4[12]|[5-7]2|1\\d?)|(?:0|3[12]|[5-7]1|217)\\d)\\d{4}|9(?:[35]1|(?:[024]2|81)\\d|(?:1|[24]1)\\d{2})\\d{3}","\\d{6,9}",,,"27111234"]
+,[,,"2(?:7(?:1[0-267]|2[0-289]|3[0-29]|[46][01]|5[1-3]|7[017]|91)|8(?:0[125]|[139][1-6]|2[0157-9]|6[1-35]|7[1-5]|8[1-8])|9(?:0[0-2]|1[0-4]|2[568]|3[3-6]|5[5-7]|6[0167]|7[15]|8[0146-8]))\\d{4}|3(?:12?[5-7]\\d{2}|0(?:2(?:[025-79]\\d|[348]\\d{1,2})|3(?:[2-4]\\d|[56]\\d?))|2(?:1\\d{2}|2(?:[12]\\d|[35]\\d{1,2}|4\\d?))|3(?:1\\d{2}|2(?:[2356]\\d|4\\d{1,2}))|4(?:1\\d{2}|2(?:2\\d{1,2}|[47]|5\\d{2}))|5(?:1\\d{2}|29)|[67]1\\d{2}|8(?:1\\d{2}|2(?:2\\d{2}|3|4\\d)))\\d{3}|4(?:0(?:2(?:[09]\\d|7)|33\\d{2})|1\\d{3}|2(?:1\\d{2}|2(?:[25]\\d?|[348]\\d|[67]\\d{1,2}))|3(?:1\\d{2}(?:\\d{2})?|2(?:[045]\\d|[236-9]\\d{1,2})|32\\d{2})|4(?:[18]\\d{2}|2(?:[2-46]\\d{2}|3)|5[25]\\d{2})|5(?:1\\d{2}|2(?:3\\d|5))|6(?:[18]\\d{2}|2(?:3(?:\\d{2})?|[46]\\d{1,2}|5\\d{2}|7\\d)|5(?:3\\d?|4\\d|[57]\\d{1,2}|6\\d{2}|8))|71\\d{2}|8(?:[18]\\d{2}|23\\d{2}|54\\d{2})|9(?:[18]\\d{2}|2[2-5]\\d{2}|53\\d{1,2}))\\d{3}|5(?:02[03489]\\d{2}|1\\d{2}|2(?:1\\d{2}|2(?:2(?:\\d{2})?|[457]\\d{2}))|3(?:1\\d{2}|2(?:[37](?:\\d{2})?|[569]\\d{2}))|4(?:1\\d{2}|2[46]\\d{2})|5(?:1\\d{2}|26\\d{1,2})|6(?:[18]\\d{2}|2|53\\d{2})|7(?:1|24)\\d{2}|8(?:1|26)\\d{2}|91\\d{2})\\d{3}|6(?:0(?:1\\d{2}|2(?:3\\d{2}|4\\d{1,2}))|2(?:2[2-5]\\d{2}|5(?:[3-5]\\d{2}|7)|8\\d{2})|3(?:1|2[3478])\\d{2}|4(?:1|2[34])\\d{2}|5(?:1|2[47])\\d{2}|6(?:[18]\\d{2}|6(?:2(?:2\\d|[34]\\d{2})|5(?:[24]\\d{2}|3\\d|5\\d{1,2})))|72[2-5]\\d{2}|8(?:1\\d{2}|2[2-5]\\d{2})|9(?:1\\d{2}|2[2-6]\\d{2}))\\d{3}|7(?:(?:02|[3-589]1|6[12]|72[24])\\d{2}|21\\d{3}|32)\\d{3}|8(?:(?:4[12]|[5-7]2|1\\d?)|(?:0|3[12]|[5-7]1|217)\\d)\\d{4}|9(?:[35]1|(?:[024]2|81)\\d|(?:1|[24]1)\\d{2})\\d{3}","\\d{6,9}",,,"27111234"]
 ,[,,"(?:1[13-9]\\d|(?:3[78]|44)[02-9]|6(?:44|6[02-9]))\\d{7}","\\d{10}",,,"1812345678"]
 ,[,,"80[03]\\d{7}","\\d{10}",,,"8001234567"]
 ,[,,"NA","NA"]
@@ -11187,20 +11388,20 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,,,[,,"NA","NA"]
 ]
 ,"BE":[,[,,"[1-9]\\d{7,8}","\\d{8,9}"]
-,[,,"(?:1[0-69]|[49][23]|5\\d|6[013-57-9]|71|8[0-79])[1-9]\\d{5}|[23][2-8]\\d{6}","\\d{8}",,,"12345678"]
-,[,,"4(?:[679]\\d|8[03-9])\\d{6}","\\d{9}",,,"470123456"]
+,[,,"(?:1[0-69]|[23][2-8]|4[23]|5\\d|6[013-57-9]|71|8[1-79]|9[2-4])\\d{6}|80[2-8]\\d{5}","\\d{8}",,,"12345678"]
+,[,,"4(?:6[0135-8]|[79]\\d|8[3-9])\\d{6}","\\d{9}",,,"470123456"]
 ,[,,"800\\d{5}","\\d{8}",,,"80012345"]
-,[,,"(?:70[2-7]|90\\d)\\d{5}","\\d{8}",,,"90123456"]
+,[,,"(?:70[2-467]|90[0-79])\\d{5}","\\d{8}",,,"90123456"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
-,"BE",32,"00","0",,,"0",,,,[[,"(4[6-9]\\d)(\\d{2})(\\d{2})(\\d{2})","$1 $2 $3 $4",["4[6-9]"]
+,"BE",32,"00","0",,,"0",,,,[[,"(\\d{3})(\\d{2})(\\d{2})(\\d{2})","$1 $2 $3 $4",["4[6-9]"]
 ,"0$1","",0]
-,[,"([2-49])(\\d{3})(\\d{2})(\\d{2})","$1 $2 $3 $4",["[23]|[49][23]"]
+,[,"(\\d)(\\d{3})(\\d{2})(\\d{2})","$1 $2 $3 $4",["[23]|4[23]|9[2-4]"]
 ,"0$1","",0]
-,[,"([15-8]\\d)(\\d{2})(\\d{2})(\\d{2})","$1 $2 $3 $4",["[156]|7[018]|8(?:0[1-9]|[1-79])"]
+,[,"(\\d{2})(\\d{2})(\\d{2})(\\d{2})","$1 $2 $3 $4",["[156]|7[018]|8(?:0[1-9]|[1-79])"]
 ,"0$1","",0]
-,[,"([89]\\d{2})(\\d{2})(\\d{3})","$1 $2 $3",["(?:80|9)0"]
+,[,"(\\d{3})(\\d{2})(\\d{3})","$1 $2 $3",["(?:80|9)0"]
 ,"0$1","",0]
 ]
 ,,[,,"NA","NA"]
@@ -11208,8 +11409,8 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,[,,"78\\d{6}","\\d{8}",,,"78123456"]
 ,,,[,,"NA","NA"]
 ]
-,"BF":[,[,,"[24-7]\\d{7}","\\d{8}"]
-,[,,"(?:20(?:49|5[23]|9[016-9])|40(?:4[569]|5[4-6]|7[0179])|50(?:[34]\\d|50))\\d{4}","\\d{8}",,,"20491234"]
+,"BF":[,[,,"[267]\\d{7}","\\d{8}"]
+,[,,"2(?:0(?:49|5[23]|9[016-9])|4(?:4[569]|5[4-6]|7[0179])|5(?:[34]\\d|50))\\d{4}","\\d{8}",,,"20491234"]
 ,[,,"6(?:[0-689]\\d|7[0-5])\\d{5}|7\\d{7}","\\d{8}",,,"70123456"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
@@ -11225,7 +11426,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"BG":[,[,,"[23567]\\d{5,7}|[489]\\d{6,8}","\\d{5,9}"]
 ,[,,"2(?:[0-8]\\d{5,6}|9\\d{4,6})|(?:[36]\\d|5[1-9]|8[1-6]|9[1-7])\\d{5,6}|(?:4(?:[124-7]\\d|3[1-6])|7(?:0[1-9]|[1-9]\\d))\\d{4,5}","\\d{5,8}",,,"2123456"]
-,[,,"(?:8[7-9]|98)\\d{7}|4(?:3[0789]|8\\d)\\d{5}","\\d{8,9}",,,"48123456"]
+,[,,"(?:8[7-9]\\d|9(?:8\\d|99))\\d{6}|4(?:3[0789]|8\\d)\\d{5}","\\d{8,9}",,,"48123456"]
 ,[,,"800\\d{5}","\\d{8}",,,"80012345"]
 ,[,,"90\\d{6}","\\d{8}",,,"90123456"]
 ,[,,"NA","NA"]
@@ -11241,6 +11442,8 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,"0$1","",0]
 ,[,"(\\d{3})(\\d{2})(\\d{3})","$1 $2 $3",["[78]00"]
 ,"0$1","",0]
+,[,"(\\d{3})(\\d{3})(\\d{3})","$1 $2 $3",["999"]
+,"0$1","",0]
 ,[,"(\\d{2})(\\d{3})(\\d{2,3})","$1 $2 $3",["[356]|4[124-7]|7[1-9]|8[1-6]|9[1-7]"]
 ,"0$1","",0]
 ,[,"(\\d{2})(\\d{3})(\\d{3,4})","$1 $2 $3",["48|8[7-9]|9[08]"]
@@ -11252,8 +11455,8 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,,,[,,"NA","NA"]
 ]
 ,"BH":[,[,,"[136-9]\\d{7}","\\d{8}"]
-,[,,"(?:1(?:3[13-6]|6[0156]|7\\d)\\d|6(?:1[16]\\d|500|6(?:0\\d|3[12]|44|88)|9[69][69])|7(?:7\\d{2}|178))\\d{4}","\\d{8}",,,"17001234"]
-,[,,"(?:3(?:[1-4679]\\d|5[01356]|8[0-48])\\d|6(?:3(?:00|33|6[16])|6(?:[69]\\d|3[03-9])))\\d{4}","\\d{8}",,,"36001234"]
+,[,,"(?:1(?:3[1356]|6[0156]|7\\d)\\d|6(?:1[16]\\d|500|6(?:0\\d|3[12]|44|7[7-9])|9[69][69])|7(?:1(?:11|78)|7\\d{2}))\\d{4}","\\d{8}",,,"17001234"]
+,[,,"(?:3(?:[1-4679]\\d|5[013569]|8[0-47-9])\\d|6(?:3(?:00|33|6[16])|6(?:[69]\\d|3[03-9]|7[0-6])))\\d{4}","\\d{8}",,,"36001234"]
 ,[,,"80\\d{6}","\\d{8}",,,"80123456"]
 ,[,,"(?:87|9[014578])\\d{6}","\\d{8}",,,"90123456"]
 ,[,,"84\\d{6}","\\d{8}",,,"84123456"]
@@ -11369,8 +11572,8 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,,,[,,"NA","NA"]
 ]
 ,"BR":[,[,,"[1-46-9]\\d{7,10}|5\\d{8,9}","\\d{8,11}"]
-,[,,"1[1-9][2-5]\\d{7}|(?:[4689][1-9]|2[12478]|3[1-578]|5[13-5]|7[13-579])[2-5]\\d{7}","\\d{8,11}",,,"1123456789"]
-,[,,"1[1-9](?:7|9\\d)\\d{7}|(?:2[12478]|9[1-9])9?[6-9]\\d{7}|(?:3[1-578]|[468][1-9]|5[13-5]|7[13-579])[6-9]\\d{7}","\\d{10,11}",,,"11961234567"]
+,[,,"1[1-9][2-5]\\d{7}|(?:[4689][1-9]|2[12478]|3[1-578]|5[1-5]|7[13-579])[2-5]\\d{7}","\\d{8,11}",,,"1123456789"]
+,[,,"1[1-9](?:7|9\\d)\\d{7}|(?:2[12478]|3[1-578]|7[13-579]|[89][1-9])9?[6-9]\\d{7}|(?:[46][1-9]|5[1-5])[6-9]\\d{7}","\\d{10,11}",,,"11961234567"]
 ,[,,"800\\d{6,7}","\\d{8,11}",,,"800123456"]
 ,[,,"[359]00\\d{6,7}","\\d{8,11}",,,"300123456"]
 ,[,,"[34]00\\d{5}","\\d{8}",,,"40041234"]
@@ -11382,7 +11585,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,"$1","",0]
 ,[,"(\\d{3,5})","$1",["1[125689]"]
 ,"$1","",0]
-,[,"(\\d{2})(\\d{5})(\\d{4})","$1 $2-$3",["(?:1[1-9]|2[12478]|9[1-9])9"]
+,[,"(\\d{2})(\\d{5})(\\d{4})","$1 $2-$3",["(?:[189][1-9]|2[12478]|3[1-578]|7[13-579])9"]
 ,"($1)","0 $CC ($1)",0]
 ,[,"(\\d{2})(\\d{4})(\\d{4})","$1 $2-$3",["[1-9][1-9]"]
 ,"($1)","0 $CC ($1)",0]
@@ -11391,7 +11594,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,[,"([3589]00)(\\d{2,3})(\\d{4})","$1 $2 $3",["[3589]00"]
 ,"0$1","",0]
 ]
-,[[,"(\\d{2})(\\d{5})(\\d{4})","$1 $2-$3",["(?:1[1-9]|2[12478]|9[1-9])9"]
+,[[,"(\\d{2})(\\d{5})(\\d{4})","$1 $2-$3",["(?:[189][1-9]|2[12478]|3[1-578]|7[13-579])9"]
 ,"($1)","0 $CC ($1)",0]
 ,[,"(\\d{2})(\\d{4})(\\d{4})","$1 $2-$3",["[1-9][1-9]"]
 ,"($1)","0 $CC ($1)",0]
@@ -11406,7 +11609,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,,,[,,"NA","NA"]
 ]
 ,"BS":[,[,,"[2589]\\d{9}","\\d{7}(?:\\d{3})?"]
-,[,,"242(?:3(?:02|[236][1-9]|4[0-24-9]|5[0-68]|7[3467]|8[0-4]|9[2-467])|461|502|6(?:0[12]|12|7[67]|8[78]|9[89])|702)\\d{4}","\\d{7}(?:\\d{3})?",,,"2423456789"]
+,[,,"242(?:3(?:02|[236][1-9]|4[0-24-9]|5[0-68]|7[3467]|8[0-4]|9[2-467])|461|502|6(?:0[1-3]|12|7[67]|8[78]|9[89])|7(?:02|88))\\d{4}","\\d{7}(?:\\d{3})?",,,"2423456789"]
 ,[,,"242(?:3(?:5[79]|[79]5)|4(?:[2-4][1-9]|5[1-8]|6[2-8]|7\\d|81)|5(?:2[45]|3[35]|44|5[1-9]|65|77)|6[34]6|727)\\d{4}","\\d{10}",,,"2423591234"]
 ,[,,"242300\\d{4}|8(?:00|44|55|66|77|88)[2-9]\\d{6}","\\d{10}",,,"8002123456"]
 ,[,,"900[2-9]\\d{6}","\\d{10}",,,"9002123456"]
@@ -11438,7 +11641,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"BW":[,[,,"[2-79]\\d{6,7}","\\d{7,8}"]
 ,[,,"(?:2(?:4[0-48]|6[0-24]|9[0578])|3(?:1[0235-9]|55|6\\d|7[01]|9[0-57])|4(?:6[03]|7[1267]|9[0-5])|5(?:3[0389]|4[0489]|7[1-47]|88|9[0-49])|6(?:2[1-35]|5[149]|8[067]))\\d{4}","\\d{7}",,,"2401234"]
-,[,,"7(?:[1-356]\\d|4[0-7]|7[014-7])\\d{5}","\\d{8}",,,"71123456"]
+,[,,"7(?:[1-6]\\d|7[014-8])\\d{5}","\\d{8}",,,"71123456"]
 ,[,,"NA","NA"]
 ,[,,"90\\d{5}","\\d{7}",,,"9012345"]
 ,[,,"NA","NA"]
@@ -11456,14 +11659,14 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,[,,"NA","NA"]
 ,,,[,,"NA","NA"]
 ]
-,"BY":[,[,,"[1-4]\\d{8}|[89]\\d{9,10}","\\d{7,11}"]
-,[,,"(?:1(?:5(?:1[1-5]|[24]\\d|6[2-4]|9[1-7])|6(?:[235]\\d|4[1-7])|7\\d{2})|2(?:1(?:[246]\\d|3[0-35-9]|5[1-9])|2(?:[235]\\d|4[0-8])|3(?:[26]\\d|3[02-79]|4[024-7]|5[03-7])))\\d{5}","\\d{7,9}",,,"152450911"]
+,"BY":[,[,,"[1-4]\\d{8}|800\\d{3,7}|[89]\\d{9,10}","\\d{6,11}"]
+,[,,"(?:1(?:5(?:1[1-5]|[24]\\d|6[2-4]|9[1-7])|6(?:[235]\\d|4[1-7])|7\\d{2})|2(?:1(?:[246]\\d|3[0-35-9]|5[1-9])|2(?:[235]\\d|4[0-8])|3(?:[26]\\d|3[02-79]|4[024-7]|5[03-7])))\\d{5}","\\d{6,11}",,,"152450911"]
 ,[,,"(?:2(?:5[5679]|9[1-9])|33\\d|44\\d)\\d{6}","\\d{9}",,,"294911911"]
-,[,,"8(?:0[13]|20\\d)\\d{7}","\\d{10,11}",,,"8011234567"]
+,[,,"8(?:0[13]|20\\d)\\d{7}|800\\d{3,7}","\\d{6,11}",,,"8011234567"]
 ,[,,"(?:810|902)\\d{7}","\\d{10}",,,"9021234567"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
-,[,,"NA","NA"]
+,[,,"249\\d{6}","\\d{9}",,,"249123456"]
 ,"BY",375,"810","8",,,"8?0?",,"8~10",,[[,"(\\d{2})(\\d{3})(\\d{2})(\\d{2})","$1 $2-$3-$4",["17[0-3589]|2[4-9]|[34]","17(?:[02358]|1[0-2]|9[0189])|2[4-9]|[34]"]
 ,"8 0$1","",0]
 ,[,"(\\d{3})(\\d{2})(\\d{2})(\\d{2})","$1 $2-$3-$4",["1(?:5[24]|6[235]|7[467])|2(?:1[246]|2[25]|3[26])","1(?:5[24]|6(?:2|3[04-9]|5[0346-9])|7(?:[46]|7[37-9]))|2(?:1[246]|2[25]|3[26])"]
@@ -11472,11 +11675,15 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,"8 0$1","",0]
 ,[,"([89]\\d{2})(\\d{3})(\\d{4})","$1 $2 $3",["8[01]|9"]
 ,"8 $1","",0]
-,[,"(8\\d{2})(\\d{4})(\\d{4})","$1 $2 $3",["82"]
+,[,"(82\\d)(\\d{4})(\\d{4})","$1 $2 $3",["82"]
+,"8 $1","",0]
+,[,"(800)(\\d{3})","$1 $2",["800"]
+,"8 $1","",0]
+,[,"(800)(\\d{2})(\\d{2,4})","$1 $2 $3",["800"]
 ,"8 $1","",0]
 ]
 ,,[,,"NA","NA"]
-,,,[,,"8(?:[013]|[12]0)\\d{8}|902\\d{7}","\\d{10,11}",,,"82012345678"]
+,,,[,,"8(?:[013]|[12]0)\\d{8}|800\\d{3,7}|902\\d{7}","\\d{6,11}",,,"82012345678"]
 ,[,,"NA","NA"]
 ,,,[,,"NA","NA"]
 ]
@@ -11499,8 +11706,8 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,1,,[,,"NA","NA"]
 ]
 ,"CA":[,[,,"[2-9]\\d{9}|3\\d{6}","\\d{7}(?:\\d{3})?"]
-,[,,"(?:2(?:04|[23]6|[48]9|50)|3(?:06|43|65)|4(?:03|1[68]|3[178]|50)|5(?:06|1[49]|79|8[17])|6(?:0[04]|13|39|47)|7(?:0[59]|78|8[02])|8(?:[06]7|19|73)|90[25])[2-9]\\d{6}|310\\d{4}","\\d{7}(?:\\d{3})?",,,"2042345678"]
-,[,,"(?:2(?:04|[23]6|[48]9|50)|3(?:06|43|65)|4(?:03|1[68]|3[178]|50)|5(?:06|1[49]|79|8[17])|6(?:0[04]|13|39|47)|7(?:0[59]|78|8[02])|8(?:[06]7|19|73)|90[25])[2-9]\\d{6}","\\d{7}(?:\\d{3})?",,,"2042345678"]
+,[,,"(?:2(?:04|[23]6|[48]9|50)|3(?:06|43|65)|4(?:03|1[68]|3[178]|50)|5(?:06|1[49]|48|79|8[17])|6(?:0[04]|13|22|39|47)|7(?:0[59]|78|8[02])|8(?:[06]7|19|73)|90[25])[2-9]\\d{6}|310\\d{4}","\\d{7}(?:\\d{3})?",,,"2042345678"]
+,[,,"(?:2(?:04|[23]6|[48]9|50)|3(?:06|43|65)|4(?:03|1[68]|3[178]|50)|5(?:06|1[49]|48|79|8[17])|6(?:0[04]|13|22|39|47)|7(?:0[59]|78|8[02])|8(?:[06]7|19|73)|90[25])[2-9]\\d{6}","\\d{7}(?:\\d{3})?",,,"2042345678"]
 ,[,,"8(?:00|44|55|66|77|88)[2-9]\\d{6}|310\\d{4}","\\d{7}(?:\\d{3})?",,,"8002123456"]
 ,[,,"900[2-9]\\d{6}","\\d{10}",,,"9002123456"]
 ,[,,"NA","NA"]
@@ -11564,8 +11771,8 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,"CG":[,[,,"[028]\\d{8}","\\d{9}"]
 ,[,,"222[1-589]\\d{5}","\\d{9}",,,"222123456"]
 ,[,,"0[14-6]\\d{7}","\\d{9}",,,"061234567"]
-,[,,"800\\d{6}","\\d{9}",,,"800123456"]
 ,[,,"NA","NA"]
+,[,,"800\\d{6}","\\d{9}",,,"800123456"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
@@ -11601,7 +11808,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"CI":[,[,,"[02-7]\\d{7}","\\d{8}"]
 ,[,,"(?:2(?:0[023]|1[02357]|[23][045]|4[03-5])|3(?:0[06]|1[069]|[2-4][07]|5[09]|6[08]))\\d{5}","\\d{8}",,,"21234567"]
-,[,,"(?:0[1-9]|4[0-24-9]|5[4-9]|6[015-79]|7[57])\\d{6}","\\d{8}",,,"01234567"]
+,[,,"(?:0[1-9]|4\\d|5[4-9]|6[015-79]|7[578])\\d{6}","\\d{8}",,,"01234567"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
@@ -11630,14 +11837,14 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,,,[,,"NA","NA"]
 ]
 ,"CL":[,[,,"(?:[2-9]|600|123)\\d{7,8}","\\d{7,11}"]
-,[,,"2(?:2\\d{7}|1962\\d{4})|(?:3[2-5]|[47][1-35]|5[1-3578]|6[13-57])\\d{7}","\\d{7,9}",,,"221234567"]
+,[,,"2(?:2\\d{7}|3(?:20|22)\\d{5}|1962\\d{4})|(?:3[2-5]|[47][1-35]|5[1-3578]|6[13-57])\\d{7}","\\d{7,9}",,,"221234567"]
 ,[,,"9[4-9]\\d{7}","\\d{8,9}",,,"961234567"]
 ,[,,"800\\d{6}|1230\\d{7}","\\d{9,11}",,,"800123456"]
 ,[,,"NA","NA"]
 ,[,,"600\\d{7,8}","\\d{10,11}",,,"6001234567"]
 ,[,,"NA","NA"]
 ,[,,"44\\d{7}","\\d{9}",,,"441234567"]
-,"CL",56,"(?:0|1(?:1[0-69]|2[0-57]|5[13-58]|69|7[0167]|8[018]))0","0",,,"0|(1(?:1[0-69]|2[0-57]|5[13-58]|69|7[0167]|8[018]))",,,,[[,"(\\d)(\\d{4})(\\d{4})","$1 $2 $3",["22"]
+,"CL",56,"(?:0|1(?:1[0-69]|2[0-57]|5[13-58]|69|7[0167]|8[018]))0","0",,,"0|(1(?:1[0-69]|2[0-57]|5[13-58]|69|7[0167]|8[018]))",,,,[[,"(\\d)(\\d{4})(\\d{4})","$1 $2 $3",["2[23]"]
 ,"($1)","$CC ($1)",0]
 ,[,"(\\d{2})(\\d{3})(\\d{4})","$1 $2 $3",["[357]|4[1-35]|6[13-57]"]
 ,"($1)","$CC ($1)",0]
@@ -11656,7 +11863,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,[,"(\\d{4,5})","$1",["[1-9]"]
 ,"$1","",0]
 ]
-,[[,"(\\d)(\\d{4})(\\d{4})","$1 $2 $3",["22"]
+,[[,"(\\d)(\\d{4})(\\d{4})","$1 $2 $3",["2[23]"]
 ,"($1)","$CC ($1)",0]
 ,[,"(\\d{2})(\\d{3})(\\d{4})","$1 $2 $3",["[357]|4[1-35]|6[13-57]"]
 ,"($1)","$CC ($1)",0]
@@ -11678,9 +11885,9 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,[,,"NA","NA"]
 ,,,[,,"NA","NA"]
 ]
-,"CM":[,[,,"[235-9]\\d{7,8}","\\d{8,9}"]
-,[,,"2(?:22|33|4[23])\\d{6}|(?:22|33)\\d{6}","\\d{8,9}",,,"222123456"]
-,[,,"6[5-79]\\d{7}|[579]\\d{7}","\\d{8,9}",,,"671234567"]
+,"CM":[,[,,"[2368]\\d{7,8}","\\d{8,9}"]
+,[,,"2(?:22|33|4[23])\\d{6}","\\d{9}",,,"222123456"]
+,[,,"6[5-9]\\d{7}","\\d{9}",,,"671234567"]
 ,[,,"800\\d{5}","\\d{8}",,,"80012345"]
 ,[,,"88\\d{6}","\\d{8}",,,"88012345"]
 ,[,,"NA","NA"]
@@ -11688,7 +11895,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,[,,"NA","NA"]
 ,"CM",237,"00",,,,,,,,[[,"([26])(\\d{2})(\\d{2})(\\d{2})(\\d{2})","$1 $2 $3 $4 $5",["[26]"]
 ,"","",0]
-,[,"([2357-9]\\d)(\\d{2})(\\d{2})(\\d{2})","$1 $2 $3 $4",["[23579]|88"]
+,[,"(\\d{2})(\\d{2})(\\d{2})(\\d{2})","$1 $2 $3 $4",["[23]|88"]
 ,"","",0]
 ,[,"(800)(\\d{2})(\\d{3})","$1 $2 $3",["80"]
 ,"","",0]
@@ -11698,15 +11905,15 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,[,,"NA","NA"]
 ,,,[,,"NA","NA"]
 ]
-,"CN":[,[,,"[1-7]\\d{6,11}|8[0-357-9]\\d{6,9}|9\\d{7,9}","\\d{4,12}"]
-,[,,"21(?:100\\d{2}|95\\d{3,4}|\\d{8,10})|(?:10|2[02-57-9]|3(?:11|7[179])|4(?:[15]1|3[12])|5(?:1\\d|2[37]|3[12]|51|7[13-79]|9[15])|7(?:31|5[457]|6[09]|91)|8(?:71|98))(?:100\\d{2}|95\\d{3,4}|\\d{8})|(?:3(?:1[02-9]|35|49|5\\d|7[02-68]|9[1-68])|4(?:1[02-9]|2[179]|3[3-9]|5[2-9]|6[4789]|7\\d|8[23])|5(?:3[03-9]|4[36]|5[02-9]|6[1-46]|7[028]|80|9[2-46-9])|6(?:3[1-5]|6[0238]|9[12])|7(?:01|[17]\\d|2[248]|3[04-9]|4[3-6]|5[0-3689]|6[2368]|9[02-9])|8(?:1[236-8]|2[5-7]|3\\d|5[1-9]|7[02-9]|8[3678]|9[1-7])|9(?:0[1-3689]|1[1-79]|[379]\\d|4[13]|5[1-5]))(?:100\\d{2}|95\\d{3,4}|\\d{7})|80(?:29|6[03578]|7[018]|81)\\d{4}","\\d{4,12}",,,"1012345678"]
+,"CN":[,[,,"[1-7]\\d{6,11}|8[0-357-9]\\d{6,9}|9\\d{7,10}","\\d{4,12}"]
+,[,,"21(?:100\\d{2}|95\\d{3,4}|\\d{8,10})|(?:10|2[02-57-9]|3(?:11|7[179])|4(?:[15]1|3[12])|5(?:1\\d|2[37]|3[12]|51|7[13-79]|9[15])|7(?:31|5[457]|6[09]|91)|8(?:[57]1|98))(?:100\\d{2}|95\\d{3,4}|\\d{8})|(?:3(?:1[02-9]|35|49|5\\d|7[02-68]|9[1-68])|4(?:1[02-9]|2[179]|3[3-9]|5[2-9]|6[4789]|7\\d|8[23])|5(?:3[03-9]|4[36]|5[02-9]|6[1-46]|7[028]|80|9[2-46-9])|6(?:3[1-5]|6[0238]|9[12])|7(?:01|[17]\\d|2[248]|3[04-9]|4[3-6]|5[0-3689]|6[2368]|9[02-9])|8(?:1[236-8]|2[5-7]|3\\d|5[4-9]|7[02-9]|8[3678]|9[1-7])|9(?:0[1-3689]|1[1-79]|[379]\\d|4[13]|5[1-5]))(?:100\\d{2}|95\\d{3,4}|\\d{7})|80(?:29|6[03578]|7[018]|81)\\d{4}","\\d{4,12}",,,"1012345678"]
 ,[,,"1(?:[38]\\d|4[57]|5[0-35-9]|7[06-8])\\d{8}","\\d{11}",,,"13123456789"]
 ,[,,"(?:10)?800\\d{7}","\\d{10,12}",,,"8001234567"]
 ,[,,"16[08]\\d{5}","\\d{8}",,,"16812345"]
-,[,,"400\\d{7}|(?:10|2[0-57-9]|3(?:[157]\\d|35|49|9[1-68])|4(?:[17]\\d|2[179]|[35][1-9]|6[4789]|8[23])|5(?:[1357]\\d|2[37]|4[36]|6[1-46]|80|9[1-9])|6(?:3[1-5]|6[0238]|9[12])|7(?:01|[1579]\\d|2[248]|3[014-9]|4[3-6]|6[023689])|8(?:1[236-8]|2[5-7]|[37]\\d|5[1-9]|8[3678]|9[1-8])|9(?:0[1-3689]|1[1-79]|[379]\\d|4[13]|5[1-5]))96\\d{3,4}","\\d{7,10}",,,"4001234567"]
+,[,,"400\\d{7}|950\\d{7,8}|(?:10|2[0-57-9]|3(?:[157]\\d|35|49|9[1-68])|4(?:[17]\\d|2[179]|[35][1-9]|6[4789]|8[23])|5(?:[1357]\\d|2[37]|4[36]|6[1-46]|80|9[1-9])|6(?:3[1-5]|6[0238]|9[12])|7(?:01|[1579]\\d|2[248]|3[014-9]|4[3-6]|6[023689])|8(?:1[236-8]|2[5-7]|[37]\\d|5[14-9]|8[3678]|9[1-8])|9(?:0[1-3689]|1[1-79]|[379]\\d|4[13]|5[1-5]))96\\d{3,4}","\\d{7,11}",,,"4001234567"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
-,"CN",86,"(1[1279]\\d{3})?00","0",,,"(1[1279]\\d{3})|0",,"00",,[[,"(80\\d{2})(\\d{4})","$1 $2",["80[2678]"]
+,"CN",86,"(1(?:[129]\\d{3}|79\\d{2}))?00","0",,,"(1(?:[129]\\d{3}|79\\d{2}))|0",,"00",,[[,"(80\\d{2})(\\d{4})","$1 $2",["80[2678]"]
 ,"0$1","$CC $1",1]
 ,[,"([48]00)(\\d{3})(\\d{4})","$1 $2 $3",["[48]00"]
 ,"","",0]
@@ -11722,13 +11929,15 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,"0$1","$CC $1",1]
 ,[,"([12]\\d)(\\d{4})(\\d{4})","$1 $2 $3",["10[1-9]|2[02-9]","10[1-9]|2[02-9]","10(?:[1-79]|8(?:[1-9]|0[1-9]))|2[02-9]"]
 ,"0$1","$CC $1",1]
-,[,"(\\d{3})(\\d{4})(\\d{4})","$1 $2 $3",["3(?:11|7[179])|4(?:[15]1|3[12])|5(?:1|2[37]|3[12]|51|7[13-79]|9[15])|7(?:31|5[457]|6[09]|91)|8(?:71|98)"]
+,[,"(\\d{3})(\\d{4})(\\d{4})","$1 $2 $3",["3(?:11|7[179])|4(?:[15]1|3[12])|5(?:1|2[37]|3[12]|51|7[13-79]|9[15])|7(?:31|5[457]|6[09]|91)|8(?:[57]1|98)"]
 ,"0$1","$CC $1",1]
-,[,"(\\d{3})(\\d{3})(\\d{4})","$1 $2 $3",["3(?:1[02-9]|35|49|5|7[02-68]|9[1-68])|4(?:1[02-9]|2[179]|[35][2-9]|6[4789]|7\\d|8[23])|5(?:3[03-9]|4[36]|5[02-9]|6[1-46]|7[028]|80|9[2-46-9])|6(?:3[1-5]|6[0238]|9[12])|7(?:01|[1579]|2[248]|3[04-9]|4[3-6]|6[2368])|8(?:1[236-8]|2[5-7]|3|5[1-9]|7[02-9]|8[3678]|9[1-7])|9(?:0[1-3689]|1[1-79]|[379]|4[13]|5[1-5])"]
+,[,"(\\d{3})(\\d{3})(\\d{4})","$1 $2 $3",["3(?:1[02-9]|35|49|5|7[02-68]|9[1-68])|4(?:1[02-9]|2[179]|[35][2-9]|6[4789]|7\\d|8[23])|5(?:3[03-9]|4[36]|5[02-9]|6[1-46]|7[028]|80|9[2-46-9])|6(?:3[1-5]|6[0238]|9[12])|7(?:01|[1579]|2[248]|3[04-9]|4[3-6]|6[2368])|8(?:1[236-8]|2[5-7]|3|5[4-9]|7[02-9]|8[3678]|9[1-7])|9(?:0[1-3689]|1[1-79]|[379]|4[13]|5[1-5])"]
 ,"0$1","$CC $1",1]
 ,[,"(\\d{3})(\\d{4})(\\d{4})","$1 $2 $3",["1[3-578]"]
 ,"","$CC $1",0]
 ,[,"(10800)(\\d{3})(\\d{4})","$1 $2 $3",["108","1080","10800"]
+,"","",0]
+,[,"(\\d{3})(\\d{7,8})","$1 $2",["950"]
 ,"","",0]
 ]
 ,[[,"(80\\d{2})(\\d{4})","$1 $2",["80[2678]"]
@@ -11743,17 +11952,19 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,"0$1","$CC $1",1]
 ,[,"([12]\\d)(\\d{4})(\\d{4})","$1 $2 $3",["10[1-9]|2[02-9]","10[1-9]|2[02-9]","10(?:[1-79]|8(?:[1-9]|0[1-9]))|2[02-9]"]
 ,"0$1","$CC $1",1]
-,[,"(\\d{3})(\\d{4})(\\d{4})","$1 $2 $3",["3(?:11|7[179])|4(?:[15]1|3[12])|5(?:1|2[37]|3[12]|51|7[13-79]|9[15])|7(?:31|5[457]|6[09]|91)|8(?:71|98)"]
+,[,"(\\d{3})(\\d{4})(\\d{4})","$1 $2 $3",["3(?:11|7[179])|4(?:[15]1|3[12])|5(?:1|2[37]|3[12]|51|7[13-79]|9[15])|7(?:31|5[457]|6[09]|91)|8(?:[57]1|98)"]
 ,"0$1","$CC $1",1]
-,[,"(\\d{3})(\\d{3})(\\d{4})","$1 $2 $3",["3(?:1[02-9]|35|49|5|7[02-68]|9[1-68])|4(?:1[02-9]|2[179]|[35][2-9]|6[4789]|7\\d|8[23])|5(?:3[03-9]|4[36]|5[02-9]|6[1-46]|7[028]|80|9[2-46-9])|6(?:3[1-5]|6[0238]|9[12])|7(?:01|[1579]|2[248]|3[04-9]|4[3-6]|6[2368])|8(?:1[236-8]|2[5-7]|3|5[1-9]|7[02-9]|8[3678]|9[1-7])|9(?:0[1-3689]|1[1-79]|[379]|4[13]|5[1-5])"]
+,[,"(\\d{3})(\\d{3})(\\d{4})","$1 $2 $3",["3(?:1[02-9]|35|49|5|7[02-68]|9[1-68])|4(?:1[02-9]|2[179]|[35][2-9]|6[4789]|7\\d|8[23])|5(?:3[03-9]|4[36]|5[02-9]|6[1-46]|7[028]|80|9[2-46-9])|6(?:3[1-5]|6[0238]|9[12])|7(?:01|[1579]|2[248]|3[04-9]|4[3-6]|6[2368])|8(?:1[236-8]|2[5-7]|3|5[4-9]|7[02-9]|8[3678]|9[1-7])|9(?:0[1-3689]|1[1-79]|[379]|4[13]|5[1-5])"]
 ,"0$1","$CC $1",1]
 ,[,"(\\d{3})(\\d{4})(\\d{4})","$1 $2 $3",["1[3-578]"]
 ,"","$CC $1",0]
 ,[,"(10800)(\\d{3})(\\d{4})","$1 $2 $3",["108","1080","10800"]
 ,"","",0]
+,[,"(\\d{3})(\\d{7,8})","$1 $2",["950"]
+,"","",0]
 ]
 ,[,,"NA","NA"]
-,,,[,,"(?:4|(?:10)?8)00\\d{7}","\\d{10,12}",,,"4001234567"]
+,,,[,,"(?:4|(?:10)?8)00\\d{7}|950\\d{7,8}","\\d{10,12}",,,"4001234567"]
 ,[,,"NA","NA"]
 ,,,[,,"NA","NA"]
 ]
@@ -11785,13 +11996,13 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,,,[,,"NA","NA"]
 ]
 ,"CR":[,[,,"[24-9]\\d{7,9}","\\d{8,10}"]
-,[,,"2[24-7]\\d{6}","\\d{8}",,,"22123456"]
+,[,,"2[0-24-7]\\d{6}","\\d{8}",,,"22123456"]
 ,[,,"5(?:0[01]|7[0-3])\\d{5}|6(?:[0-2]\\d|30)\\d{5}|7[0-3]\\d{6}|8[3-9]\\d{6}","\\d{8}",,,"83123456"]
 ,[,,"800\\d{7}","\\d{10}",,,"8001234567"]
 ,[,,"90[059]\\d{7}","\\d{10}",,,"9001234567"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
-,[,,"210[0-6]\\d{4}|4(?:0(?:0[01]\\d{4}|10[0-3]\\d{3}|2(?:00\\d{3}|900\\d{2})|3[01]\\d{4}|40\\d{4}|5\\d{5}|60\\d{4}|70[01]\\d{3}|8[0-2]\\d{4})|1[01]\\d{5}|20[0-3]\\d{4}|400\\d{4}|70[0-2]\\d{4})|5100\\d{4}","\\d{8}",,,"40001234"]
+,[,,"210[0-6]\\d{4}|4\\d{7}|5100\\d{4}","\\d{8}",,,"40001234"]
 ,"CR",506,"00",,,,"(19(?:0[012468]|1[09]|20|66|77|99))",,,,[[,"(\\d{4})(\\d{4})","$1 $2",["[24-7]|8[3-9]"]
 ,"","$CC $1",0]
 ,[,"(\\d{3})(\\d{3})(\\d{4})","$1-$2-$3",["[89]0"]
@@ -11905,13 +12116,15 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"DE":[,[,,"[1-35-9]\\d{3,14}|4(?:[0-8]\\d{4,12}|9(?:[0-37]\\d|4(?:[1-35-8]|4\\d?)|5\\d{1,2}|6[1-8]\\d?)\\d{2,8})","\\d{2,15}"]
 ,[,,"[246]\\d{5,13}|3(?:0\\d{3,13}|2\\d{9}|[3-9]\\d{4,13})|5(?:0[2-8]|[1256]\\d|[38][0-8]|4\\d{0,2}|[79][0-7])\\d{3,11}|7(?:0[2-8]|[1-9]\\d)\\d{3,10}|8(?:0[2-9]|[1-9]\\d)\\d{3,10}|9(?:0[6-9]\\d{3,10}|1\\d{4,12}|[2-9]\\d{4,11})","\\d{2,15}",,,"30123456"]
-,[,,"1(?:5[0-2579]\\d{8}|6[023]\\d{7,8}|7(?:[0-57-9]\\d?|6\\d)\\d{7})","\\d{10,11}",,,"15123456789"]
+,[,,"1(?:5[0-25-9]\\d{8}|6[023]\\d{7,8}|7(?:[0-57-9]\\d?|6\\d)\\d{7})","\\d{10,11}",,,"15123456789"]
 ,[,,"800\\d{7,12}","\\d{10,15}",,,"8001234567890"]
 ,[,,"137[7-9]\\d{6}|900(?:[135]\\d{6}|9\\d{7})","\\d{10,11}",,,"9001234567"]
 ,[,,"1(?:3(?:7[1-6]\\d{6}|8\\d{4})|80\\d{5,11})","\\d{7,14}",,,"18012345"]
 ,[,,"700\\d{8}","\\d{11}",,,"70012345678"]
 ,[,,"NA","NA"]
 ,"DE",49,"00","0",,,"0",,,,[[,"(1\\d{2})(\\d{7,8})","$1 $2",["1[67]"]
+,"0$1","",0]
+,[,"(15\\d{3})(\\d{6})","$1 $2",["15[0568]"]
 ,"0$1","",0]
 ,[,"(1\\d{3})(\\d{7})","$1 $2",["15"]
 ,"0$1","",0]
@@ -12004,8 +12217,8 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,,,[,,"NA","NA"]
 ]
 ,"DZ":[,[,,"(?:[1-4]|[5-9]\\d)\\d{7}","\\d{8,9}"]
-,[,,"(?:1\\d|2[014-79]|3[0-8]|4[0135689])\\d{6}|9619\\d{5}","\\d{8,9}",,,"12345678"]
-,[,,"(?:5[4-6]|7[7-9])\\d{7}|6(?:[569]\\d|7[0-4])\\d{6}","\\d{9}",,,"551234567"]
+,[,,"(?:1\\d|2[013-79]|3[0-8]|4[0135689])\\d{6}|9619\\d{5}","\\d{8,9}",,,"12345678"]
+,[,,"(?:5[4-6]|7[7-9])\\d{7}|6(?:[569]\\d|7[0-6])\\d{6}","\\d{9}",,,"551234567"]
 ,[,,"800\\d{6}","\\d{9}",,,"800123456"]
 ,[,,"80[3-689]1\\d{5}","\\d{9}",,,"808123456"]
 ,[,,"80[12]1\\d{5}","\\d{9}",,,"801123456"]
@@ -12094,7 +12307,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"EH":[,[,,"[5689]\\d{8}","\\d{9}"]
 ,[,,"528[89]\\d{5}","\\d{9}",,,"528812345"]
-,[,,"6(?:0[0-8]|[12-79]\\d|8[01])\\d{6}","\\d{9}",,,"650123456"]
+,[,,"6(?:0[0-8]|[12-79]\\d|8[017])\\d{6}","\\d{9}",,,"650123456"]
 ,[,,"80\\d{7}","\\d{9}",,,"801234567"]
 ,[,,"89\\d{7}","\\d{9}",,,"891234567"]
 ,[,,"NA","NA"]
@@ -12128,7 +12341,9 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,[,,"90[12]\\d{6}","\\d{9}",,,"901123456"]
 ,[,,"70\\d{7}","\\d{9}",,,"701234567"]
 ,[,,"NA","NA"]
-,"ES",34,"00",,,,,,,,[[,"([5-9]\\d{2})(\\d{2})(\\d{2})(\\d{2})","$1 $2 $3 $4",["[568]|[79][0-8]"]
+,"ES",34,"00",,,,,,,,[[,"([89]00)(\\d{3})(\\d{3})","$1 $2 $3",["[89]00"]
+,"","",0]
+,[,"([5-9]\\d{2})(\\d{2})(\\d{2})(\\d{2})","$1 $2 $3 $4",["[568]|[79][0-8]"]
 ,"","",0]
 ]
 ,,[,,"NA","NA"]
@@ -12234,7 +12449,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"FR":[,[,,"[1-9]\\d{8}","\\d{9}"]
 ,[,,"[1-5]\\d{8}","\\d{9}",,,"123456789"]
-,[,,"6\\d{8}|7[5-9]\\d{7}","\\d{9}",,,"612345678"]
+,[,,"6\\d{8}|7(?:00\\d{6}|[3-9]\\d{7})","\\d{9}",,,"612345678"]
 ,[,,"80\\d{7}","\\d{9}",,,"801234567"]
 ,[,,"89[1-37-9]\\d{6}","\\d{9}",,,"891123456"]
 ,[,,"8(?:1[019]|2[0156]|84|90)\\d{6}","\\d{9}",,,"810123456"]
@@ -12372,7 +12587,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"GH":[,[,,"[235]\\d{8}|8\\d{7}","\\d{7,9}"]
 ,[,,"3(?:0[237]\\d|[167](?:2[0-6]|7\\d)|2(?:2[0-5]|7\\d)|3(?:2[0-3]|7\\d)|4(?:2[013-9]|3[01]|7\\d)|5(?:2[0-7]|7\\d)|8(?:2[0-2]|7\\d)|9(?:20|7\\d))\\d{5}","\\d{7,9}",,,"302345678"]
-,[,,"(?:2[034678]\\d|5(?:[047]\\d|54|6[01]))\\d{6}","\\d{9}",,,"231234567"]
+,[,,"(?:2[034678]\\d|5(?:[047]\\d|5[3-6]|6[01]))\\d{6}","\\d{9}",,,"231234567"]
 ,[,,"800\\d{5}","\\d{8}",,,"80012345"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
@@ -12536,15 +12751,18 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,[,,"NA","NA"]
 ,,,[,,"NA","NA"]
 ]
-,"GW":[,[,,"[3-79]\\d{6}","\\d{7}"]
-,[,,"3(?:2[0125]|3[1245]|4[12]|5[1-4]|70|9[1-467])\\d{4}","\\d{7}",,,"3201234"]
-,[,,"(?:[5-7]\\d|9[012])\\d{5}","\\d{7}",,,"5012345"]
+,"GW":[,[,,"(?:4(?:0\\d{5}|4\\d{7})|9\\d{8})","\\d{7,9}"]
+,[,,"443(?:2[0125]|3[1245]|4[12]|5[1-4]|70|9[1-467])\\d{4}","\\d{7,9}",,,"443201234"]
+,[,,"9(?:55\\d|6(?:6\\d|9[012])|77\\d)\\d{5}","\\d{7,9}",,,"955012345"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
-,[,,"40\\d{5}","\\d{7}",,,"4012345"]
-,"GW",245,"00",,,,,,,,[[,"(\\d{3})(\\d{4})","$1 $2",,"","",0]
+,[,,"40\\d{5}","\\d{7,9}",,,"4012345"]
+,"GW",245,"00",,,,,,,,[[,"(\\d{3})(\\d{3})(\\d{3})","$1 $2 $3",["44|9[567]"]
+,"","",0]
+,[,"(\\d{3})(\\d{4})","$1 $2",["40"]
+,"","",0]
 ]
 ,,[,,"NA","NA"]
 ,,,[,,"NA","NA"]
@@ -12567,8 +12785,8 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,,,[,,"NA","NA"]
 ]
 ,"HK":[,[,,"[235-7]\\d{7}|8\\d{7,8}|9\\d{4,10}","\\d{5,11}"]
-,[,,"(?:[23]\\d|5[78])\\d{6}","\\d{8}",,,"21234567"]
-,[,,"(?:5[1-69]\\d|6\\d{2}|9(?:0[1-9]|[1-8]\\d))\\d{5}","\\d{8}",,,"51234567"]
+,[,,"(?:[23]\\d|58)\\d{6}","\\d{8}",,,"21234567"]
+,[,,"(?:5[1-79]\\d|6\\d{2}|8[4-79]\\d|9(?:0[1-9]|[1-8]\\d))\\d{5}","\\d{8}",,,"51234567"]
 ,[,,"800\\d{6}","\\d{9}",,,"800123456"]
 ,[,,"900(?:[0-24-9]\\d{7}|3\\d{1,4})","\\d{5,11}",,,"90012345678"]
 ,[,,"NA","NA"]
@@ -12589,7 +12807,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,,,[,,"NA","NA"]
 ]
 ,"HN":[,[,,"[237-9]\\d{7}","\\d{8}"]
-,[,,"2(?:2(?:0[019]|1[1-36]|[23]\\d|4[056]|5[57]|7[01389]|8[0146-9]|9[012])|4(?:2[3-59]|3[13-689]|4[0-68]|5[1-35])|5(?:4[3-5]|5\\d|6[56]|74)|6(?:[056]\\d|4[0-378]|[78][0-8]|9[01])|7(?:6[46-9]|7[02-9]|8[34])|8(?:79|8[0-35789]|9[1-57-9]))\\d{4}","\\d{8}",,,"22123456"]
+,[,,"2(?:2(?:0[019]|1[1-36]|[23]\\d|4[056]|5[57]|7[01389]|8[0146-9]|9[012])|4(?:2[3-59]|3[13-689]|4[0-68]|5[1-35])|5(?:4[3-5]|5\\d|6[56]|74)|6(?:[056]\\d|34|4[0-378]|[78][0-8]|9[01])|7(?:6[46-9]|7[02-9]|8[34])|8(?:79|8[0-35789]|9[1-57-9]))\\d{4}","\\d{8}",,,"22123456"]
 ,[,,"[37-9]\\d{7}","\\d{8}",,,"91234567"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
@@ -12604,10 +12822,10 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,,,[,,"NA","NA"]
 ]
 ,"HR":[,[,,"[1-7]\\d{5,8}|[89]\\d{6,11}","\\d{6,12}"]
-,[,,"1\\d{7}|(?:2[0-3]|3[1-5]|4[02-47-9]|5[1-3])\\d{6}","\\d{6,8}",,,"12345678"]
-,[,,"9[1257-9]\\d{6,10}","\\d{8,12}",,,"912345678"]
+,[,,"1\\d{7}|(?:2[0-3]|3[1-5]|4[02-47-9]|5[1-3])\\d{6,7}","\\d{6,9}",,,"12345678"]
+,[,,"9(?:[1-9]\\d{6,10}|01\\d{6,9})","\\d{8,12}",,,"912345678"]
 ,[,,"80[01]\\d{4,7}","\\d{7,10}",,,"8001234567"]
-,[,,"6(?:[09]\\d{7}|[145]\\d{4,7})","\\d{6,9}",,,"611234"]
+,[,,"6(?:[01459]\\d{4,7})","\\d{6,9}",,,"611234"]
 ,[,,"NA","NA"]
 ,[,,"7[45]\\d{4,7}","\\d{6,9}",,,"741234567"]
 ,[,,"NA","NA"]
@@ -12615,9 +12833,9 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,"0$1","",0]
 ,[,"(6[09])(\\d{4})(\\d{3})","$1 $2 $3",["6[09]"]
 ,"0$1","",0]
-,[,"(62)(\\d{3})(\\d{3,4})","$1 $2 $3",["62"]
+,[,"([67]2)(\\d{3})(\\d{3,4})","$1 $2 $3",["[67]2"]
 ,"0$1","",0]
-,[,"([2-5]\\d)(\\d{3})(\\d{3})","$1 $2 $3",["[2-5]"]
+,[,"([2-5]\\d)(\\d{3})(\\d{3,4})","$1 $2 $3",["[2-5]"]
 ,"0$1","",0]
 ,[,"(9\\d)(\\d{3})(\\d{3,4})","$1 $2 $3",["9"]
 ,"0$1","",0]
@@ -12625,9 +12843,9 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,"0$1","",0]
 ,[,"(9\\d)(\\d{3,4})(\\d{3})(\\d{3})","$1 $2 $3 $4",["9"]
 ,"0$1","",0]
-,[,"(\\d{2})(\\d{2})(\\d{2,3})","$1 $2 $3",["6[145]|7"]
+,[,"(\\d{2})(\\d{2})(\\d{2,3})","$1 $2 $3",["6[0145]|7"]
 ,"0$1","",0]
-,[,"(\\d{2})(\\d{3,4})(\\d{3})","$1 $2 $3",["6[145]|7"]
+,[,"(\\d{2})(\\d{3,4})(\\d{3})","$1 $2 $3",["6[0145]|7"]
 ,"0$1","",0]
 ,[,"(80[01])(\\d{2})(\\d{2,3})","$1 $2 $3",["8"]
 ,"0$1","",0]
@@ -12636,12 +12854,12 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,,[,,"NA","NA"]
 ,,,[,,"NA","NA"]
-,[,,"62\\d{6,7}","\\d{8,9}",,,"62123456"]
+,[,,"[76]2\\d{6,7}","\\d{8,9}",,,"62123456"]
 ,,,[,,"NA","NA"]
 ]
 ,"HT":[,[,,"[2-489]\\d{7}","\\d{8}"]
-,[,,"2(?:[24]\\d|5[1-5]|94)\\d{5}","\\d{8}",,,"22453300"]
-,[,,"(?:3[1-9]|4\\d)\\d{6}","\\d{8}",,,"34101234"]
+,[,,"2(?:[248]\\d|5[1-5]|94)\\d{5}","\\d{8}",,,"22453300"]
+,[,,"(?:3[1-9]\\d|4\\d{2}|9(?:8[0-35]|9[5-9]))\\d{5}","\\d{8}",,,"34101234"]
 ,[,,"8\\d{7}","\\d{8}",,,"80012345"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
@@ -12655,8 +12873,8 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,,,[,,"NA","NA"]
 ]
 ,"HU":[,[,,"[1-9]\\d{7,8}","\\d{6,9}"]
-,[,,"(?:1\\d|2(?:1\\d|[2-9])|3[2-7]|4[24-9]|5[2-79]|6[23689]|7(?:1\\d|[2-9])|8[2-57-9]|9[2-69])\\d{6}","\\d{6,9}",,,"12345678"]
-,[,,"(?:[27]0|3[01])\\d{7}","\\d{9}",,,"201234567"]
+,[,,"(?:1\\d|2(?:1\\d|[2-9])|3(?:[2-7]|8\\d)|4[24-9]|5[2-79]|6[23689]|7(?:1\\d|[2-9])|8[2-57-9]|9[2-69])\\d{6}","\\d{6,9}",,,"12345678"]
+,[,,"(?:[257]0|3[01])\\d{7}","\\d{9}",,,"201234567"]
 ,[,,"80\\d{6}","\\d{8}",,,"80123456"]
 ,[,,"9[01]\\d{6}","\\d{8}",,,"90123456"]
 ,[,,"40\\d{6}","\\d{8}",,,"40123456"]
@@ -12672,9 +12890,9 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,[,,"NA","NA"]
 ,,,[,,"NA","NA"]
 ]
-,"ID":[,[,,"[1-9]\\d{6,10}","\\d{5,11}"]
-,[,,"2(?:1(?:14\\d{3}|[0-8]\\d{6,7}|500\\d{3}|9\\d{6})|2\\d{6,8}|4\\d{7,8})|(?:2(?:[35][1-4]|6[0-8]|7[1-6]|8\\d|9[1-8])|3(?:1|2[1-578]|3[1-68]|4[1-3]|5[1-8]|6[1-3568]|7[0-46]|8\\d)|4(?:0[1-589]|1[01347-9]|2[0-36-8]|3[0-24-68]|5[1-378]|6[1-5]|7[134]|8[1245])|5(?:1[1-35-9]|2[25-8]|3[1246-9]|4[1-3589]|5[1-46]|6[1-8])|6(?:19?|[25]\\d|3[1-469]|4[1-6])|7(?:1[1-9]|2[14-9]|[36]\\d|4[1-8]|5[1-9]|7[0-36-9])|9(?:0[12]|1[013-8]|2[0-479]|5[125-8]|6[23679]|7[159]|8[01346]))\\d{5,8}","\\d{5,11}",,,"612345678"]
-,[,,"(?:2(?:1(?:3[145]|4[01]|5[1-469]|60|8[0359]|9\\d)|2(?:88|9[1256])|3[1-4]9|4(?:36|91)|5(?:1[349]|[2-4]9)|6[0-7]9|7(?:[1-36]9|4[39])|8[1-5]9|9[1-48]9)|3(?:19[1-3]|2[12]9|3[13]9|4(?:1[69]|39)|5[14]9|6(?:1[69]|2[89])|709)|4[13]19|5(?:1(?:19|8[39])|4[129]9|6[12]9)|6(?:19[12]|2(?:[23]9|77))|7(?:1[13]9|2[15]9|419|5(?:1[89]|29)|6[15]9|7[178]9))\\d{5,6}|8[1-35-9]\\d{7,9}","\\d{9,11}",,,"812345678"]
+,"ID":[,[,,"(?:[1-79]\\d{6,10}|8\\d{7,11})","\\d{5,12}"]
+,[,,"2(?:1(?:14\\d{3}|[0-8]\\d{6,7}|500\\d{3}|9\\d{6})|2\\d{6,8}|4\\d{7,8})|(?:2(?:[35][1-4]|6[0-8]|7[1-6]|8\\d|9[1-8])|3(?:1|[25][1-8]|3[1-68]|4[1-3]|6[1-3568]|7[0-469]|8\\d)|4(?:0[1-589]|1[01347-9]|2[0-36-8]|3[0-24-68]|43|5[1-378]|6[1-5]|7[134]|8[1245])|5(?:1[1-35-9]|2[25-8]|3[124-9]|4[1-3589]|5[1-46]|6[1-8])|6(?:19?|[25]\\d|3[1-69]|4[1-6])|7(?:02|[125][1-9]|[36]\\d|4[1-8]|7[0-36-9])|9(?:0[12]|1[013-8]|2[0-479]|5[125-8]|6[23679]|7[159]|8[01346]))\\d{5,8}","\\d{5,11}",,,"612345678"]
+,[,,"(?:2(?:1(?:3[145]|4[01]|5[1-469]|60|8[0359]|9\\d)|2(?:88|9[1256])|3[1-4]9|4(?:36|91)|5(?:1[349]|[2-4]9)|6[0-7]9|7(?:[1-36]9|4[39])|8[1-5]9|9[1-48]9)|3(?:19[1-3]|2[12]9|3[13]9|4(?:1[69]|39)|5[14]9|6(?:1[69]|2[89])|709)|4[13]19|5(?:1(?:19|8[39])|4[129]9|6[12]9)|6(?:19[12]|2(?:[23]9|77))|7(?:1[13]9|2[15]9|419|5(?:1[89]|29)|6[15]9|7[178]9))\\d{5,6}|8[1-35-9]\\d{7,10}","\\d{9,12}",,,"812345678"]
 ,[,,"177\\d{6,8}|800\\d{5,7}","\\d{8,11}",,,"8001234567"]
 ,[,,"809\\d{7}","\\d{10}",,,"8091234567"]
 ,[,,"NA","NA"]
@@ -12684,7 +12902,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,"(0$1)","",0]
 ,[,"(\\d{3})(\\d{5,8})","$1 $2",["[4579]|2[035-9]|[36][02-9]"]
 ,"(0$1)","",0]
-,[,"(8\\d{2})(\\d{3,4})(\\d{3,4})","$1-$2-$3",["8[1-35-9]"]
+,[,"(8\\d{2})(\\d{3,4})(\\d{3,5})","$1-$2-$3",["8[1-35-9]"]
 ,"0$1","",0]
 ,[,"(177)(\\d{6,8})","$1 $2",["1"]
 ,"0$1","",0]
@@ -12732,12 +12950,12 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"IL":[,[,,"[17]\\d{6,9}|[2-589]\\d{3}(?:\\d{3,6})?|6\\d{3}","\\d{4,10}"]
 ,[,,"[2-489]\\d{7}","\\d{7,8}",,,"21234567"]
-,[,,"5(?:[02347-9]\\d{2}|5(?:01|2[23]|3[34]|4[45]|5[5689]|6[67]|7[78]|8[89]|9[7-9])|6[2-9]\\d)\\d{5}","\\d{9}",,,"501234567"]
+,[,,"5(?:[02-47-9]\\d{2}|5(?:01|2[23]|3[34]|4[45]|5[5689]|6[67]|7[0178]|[89][6-9])|6[2-9]\\d)\\d{5}","\\d{9}",,,"501234567"]
 ,[,,"1(?:80[019]\\d{3}|255)\\d{3}","\\d{7,10}",,,"1800123456"]
 ,[,,"1(?:212|(?:9(?:0[01]|19)|200)\\d{2})\\d{4}","\\d{8,10}",,,"1919123456"]
 ,[,,"1700\\d{6}","\\d{10}",,,"1700123456"]
 ,[,,"NA","NA"]
-,[,,"7(?:2[23]\\d|3[237]\\d|47\\d|6(?:5\\d|8[068])|7\\d{2}|8(?:33|55|77|81))\\d{5}","\\d{9}",,,"771234567"]
+,[,,"7(?:18\\d|2[23]\\d|3[237]\\d|47\\d|6(?:5\\d|8[0168])|7\\d{2}|8(?:2\\d|33|55|77|81)|99\\d)\\d{5}","\\d{9}",,,"771234567"]
 ,"IL",972,"0(?:0|1[2-9])","0",,,"0",,,,[[,"([2-489])(\\d{3})(\\d{4})","$1-$2-$3",["[2-489]"]
 ,"0$1","",0]
 ,[,"([57]\\d)(\\d{3})(\\d{4})","$1-$2-$3",["[57]"]
@@ -12774,18 +12992,18 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,,,[,,"NA","NA"]
 ]
 ,"IN":[,[,,"1\\d{7,12}|[2-9]\\d{9,10}","\\d{6,13}"]
-,[,,"(?:11|2[02]|33|4[04]|79)[2-7]\\d{7}|80[2-467]\\d{7}|(?:1(?:2[0-249]|3[0-25]|4[145]|[59][14]|6[014]|7[1257]|8[01346])|2(?:1[257]|3[013]|4[01]|5[0137]|6[0158]|78|8[1568]|9[14])|3(?:26|4[1-3]|5[34]|6[01489]|7[02-46]|8[159])|4(?:1[36]|2[1-47]|3[15]|5[12]|6[0-26-9]|7[0-24-9]|8[013-57]|9[014-7])|5(?:[136][25]|22|4[28]|5[12]|[78]1|9[15])|6(?:12|[2345]1|57|6[13]|7[14]|80)|7(?:12|2[14]|3[134]|4[47]|5[15]|[67]1|88)|8(?:16|2[014]|3[126]|6[136]|7[078]|8[34]|91))[2-7]\\d{6}|(?:(?:1(?:2[35-8]|3[346-9]|4[236-9]|[59][0235-9]|6[235-9]|7[34689]|8[257-9])|2(?:1[134689]|3[24-8]|4[2-8]|5[25689]|6[2-4679]|7[13-79]|8[2-479]|9[235-9])|3(?:01|1[79]|2[1-5]|4[25-8]|5[125689]|6[235-7]|7[157-9]|8[2-467])|4(?:1[14578]|2[5689]|3[2-467]|5[4-7]|6[35]|73|8[2689]|9[2389])|5(?:[16][146-9]|2[14-8]|3[1346]|4[14-69]|5[46]|7[2-4]|8[2-8]|9[246])|6(?:1[1358]|2[2457]|3[2-4]|4[235-7]|[57][2-689]|6[24-578]|8[1-6])|8(?:1[1357-9]|2[235-8]|3[03-57-9]|4[0-24-9]|5\\d|6[2457-9]|7[1-6]|8[1256]|9[2-4]))\\d|7(?:(?:1[013-9]|2[0235-9]|3[2679]|4[1-35689]|5[2-46-9]|[67][02-9]|9\\d)\\d|8(?:2[0-6]|[013-8]\\d)))[2-7]\\d{5}","\\d{6,10}",,,"1123456789"]
-,[,,"(?:7(?:0(?:2[2-9]|[3-8]\\d|9[0-8])|2(?:0[04-9]|5[09]|7[5-8]|9[389])|3(?:0[1-9]|[58]\\d|7[3679]|9[689])|4(?:0[1-9]|1[15-9]|[29][89]|39|8[389])|5(?:[034678]\\d|2[03-9]|5[017-9]|9[7-9])|6(?:0[0127]|1[0-257-9]|2[0-4]|3[19]|5[4589]|[6-9]\\d)|7(?:0[2-9]|[1-79]\\d|8[1-9])|8(?:[0-7]\\d|9[013-9]))|8(?:0(?:[01589]\\d|6[67])|1(?:[02-589]\\d|1[0135-9]|7[0-79])|2(?:[236-9]\\d|5[1-9])|3(?:[0357-9]\\d|4[1-9])|[45]\\d{2}|6[02457-9]\\d|7[1-69]\\d|8(?:[0-26-9]\\d|44|5[2-9])|9(?:[035-9]\\d|2[2-9]|4[0-8]))|9\\d{3})\\d{6}","\\d{10}",,,"9123456789"]
-,[,,"1(?:600\\d{6}|80(?:0\\d{4,8}|3\\d{9}))","\\d{8,13}",,,"1800123456"]
+,[,,"(?:11|2[02]|33|4[04]|79)[2-7]\\d{7}|80[2-467]\\d{7}|(?:1(?:2[0-249]|3[0-25]|4[145]|[59][14]|6[014]|7[1257]|8[01346])|2(?:1[257]|3[013]|4[01]|5[0137]|6[0158]|78|8[1568]|9[14])|3(?:26|4[1-3]|5[34]|6[01489]|7[02-46]|8[159])|4(?:1[36]|2[1-47]|3[15]|5[12]|6[0-26-9]|7[0-24-9]|8[013-57]|9[014-7])|5(?:1[025]|[36][25]|22|4[28]|5[12]|[78]1|9[15])|6(?:12|[2345]1|57|6[13]|7[14]|80)|7(?:12|2[14]|3[134]|4[47]|5[15]|[67]1|88)|8(?:16|2[014]|3[126]|6[136]|7[078]|8[34]|91))[2-7]\\d{6}|(?:(?:1(?:2[35-8]|3[346-9]|4[236-9]|[59][0235-9]|6[235-9]|7[34689]|8[257-9])|2(?:1[134689]|3[24-8]|4[2-8]|5[25689]|6[2-4679]|7[13-79]|8[2-479]|9[235-9])|3(?:01|1[79]|2[1-5]|4[25-8]|5[125689]|6[235-7]|7[157-9]|8[2-467])|4(?:1[14578]|2[5689]|3[2-467]|5[4-7]|6[35]|73|8[2689]|9[2389])|5(?:[16][146-9]|2[14-8]|3[1346]|4[14-69]|5[46]|7[2-4]|8[2-8]|9[246])|6(?:1[1358]|2[2457]|3[2-4]|4[235-7]|[57][2-689]|6[24-578]|8[1-6])|8(?:1[1357-9]|2[235-8]|3[03-57-9]|4[0-24-9]|5\\d|6[2457-9]|7[1-6]|8[1256]|9[2-4]))\\d|7(?:(?:1[013-9]|2[0235-9]|3[2679]|4[1-35689]|5[2-46-9]|[67][02-9]|9\\d)\\d|8(?:2[0-6]|[013-8]\\d)))[2-7]\\d{5}","\\d{6,10}",,,"1123456789"]
+,[,,"(?:7(?:0\\d{2}|2(?:[0235679]\\d|[14][017-9]|8[0-59]|9[389])|3(?:[058]\\d|10|7[3679]|9[689])|4(?:0[1-9]|1[015-9]|[29][89]|39|8[389])|5(?:[034678]\\d|2[03-9]|5[017-9]|9[7-9])|6(?:0[0-47]|1[0-257-9]|2[0-4]|3[19]|5[4589]|[6-9]\\d)|7(?:0[2-9]|[1-79]\\d|8[1-9])|8[0-79]\\d)|8(?:0(?:[01589]\\d|6[67])|1(?:[02-57-9]\\d|1[0135-9])|2(?:[236-9]\\d|5[1-9])|3(?:[0357-9]\\d|4[1-9])|[45]\\d{2}|6[02457-9]\\d|7(?:07|[1-69]\\d)|8(?:[0-26-9]\\d|44|5[2-9])|9(?:[035-9]\\d|2[2-9]|4[0-8]))|9\\d{3})\\d{6}","\\d{10}",,,"9123456789"]
+,[,,"1(?:600\\d{6}|80(?:0\\d{4,9}|3\\d{9}))","\\d{8,13}",,,"1800123456"]
 ,[,,"186[12]\\d{9}","\\d{13}",,,"1861123456789"]
 ,[,,"1860\\d{7}","\\d{11}",,,"18603451234"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
-,"IN",91,"00","0",,,"0",,,,[[,"(\\d{5})(\\d{5})","$1 $2",["7(?:0[2-9]|2[0579]|3[057-9]|4[0-389]|6[0-35-9]|[57]|8[0-79])|8(?:0[015689]|1[0-57-9]|2[2356-9]|3[0-57-9]|[45]|6[02457-9]|7[1-69]|8[0124-9]|9[02-9])|9","7(?:0(?:2[2-9]|[3-8]|9[0-8])|2(?:0[04-9]|5[09]|7[5-8]|9[389])|3(?:0[1-9]|[58]|7[3679]|9[689])|4(?:0[1-9]|1[15-9]|[29][89]|39|8[389])|5(?:[034678]|2[03-9]|5[017-9]|9[7-9])|6(?:0[0-27]|1[0-257-9]|2[0-4]|3[19]|5[4589]|[6-9])|7(?:0[2-9]|[1-79]|8[1-9])|8(?:[0-7]|9[013-9]))|8(?:0(?:[01589]|6[67])|1(?:[02-589]|1[0135-9]|7[0-79])|2(?:[236-9]|5[1-9])|3(?:[0357-9]|4[1-9])|[45]|6[02457-9]|7[1-69]|8(?:[0-26-9]|44|5[2-9])|9(?:[035-9]|2[2-9]|4[0-8]))|9"]
+,"IN",91,"00","0",,,"0",,,,[[,"(\\d{5})(\\d{5})","$1 $2",["7(?:[0257]|3[0157-9]|4[0-389]|6[0-35-9]|8[0-79])|8(?:0[015689]|1[0-57-9]|2[2356-9]|3[0-57-9]|[45]|6[02457-9]|7[01-69]|8[0-24-9]|9[02-9])|9","7(?:0|2(?:[0235679]|[14][017-9]|8[0-59]|9[389])|3(?:[058]|10|7[3679]|9[689])|4(?:0[1-9]|1[015-9]|[29][89]|39|8[389])|5(?:[034678]|2[03-9]|5[017-9]|9[7-9])|6(?:0[0-47]|1[0-257-9]|2[0-4]|3[19]|5[4589]|[6-9])|7(?:0[2-9]|[1-79]|8[1-9])|8[0-79])|8(?:0(?:[01589]|6[67])|1(?:[02-57-9]|1[0135-9])|2(?:[236-9]|5[1-9])|3(?:[0357-9]|4[1-9])|[45]|6[02457-9]|7(?:07|[1-69])|8(?:[0-26-9]|44|5[2-9])|9(?:[035-9]|2[2-9]|4[0-8]))|9"]
 ,"0$1","",1]
 ,[,"(\\d{2})(\\d{4})(\\d{4})","$1 $2 $3",["11|2[02]|33|4[04]|79|80[2-46]"]
 ,"0$1","",1]
-,[,"(\\d{3})(\\d{3})(\\d{4})","$1 $2 $3",["1(?:2[0-249]|3[0-25]|4[145]|[569][14]|7[1257]|8[1346]|[68][1-9])|2(?:1[257]|3[013]|4[01]|5[0137]|6[0158]|78|8[1568]|9[14])|3(?:26|4[1-3]|5[34]|6[01489]|7[02-46]|8[159])|4(?:1[36]|2[1-47]|3[15]|5[12]|6[0-26-9]|7[0-24-9]|8[013-57]|9[014-7])|5(?:[136][25]|22|4[28]|5[12]|[78]1|9[15])|6(?:12|[2345]1|57|6[13]|7[14]|80)"]
+,[,"(\\d{3})(\\d{3})(\\d{4})","$1 $2 $3",["1(?:2[0-249]|3[0-25]|4[145]|[569][14]|7[1257]|8[1346]|[68][1-9])|2(?:1[257]|3[013]|4[01]|5[0137]|6[0158]|78|8[1568]|9[14])|3(?:26|4[1-3]|5[34]|6[01489]|7[02-46]|8[159])|4(?:1[36]|2[1-47]|3[15]|5[12]|6[0-26-9]|7[0-24-9]|8[013-57]|9[014-7])|5(?:1[025]|[36][25]|22|4[28]|5[12]|[78]1|9[15])|6(?:12|[2345]1|57|6[13]|7[14]|80)"]
 ,"0$1","",1]
 ,[,"(\\d{3})(\\d{3})(\\d{4})","$1 $2 $3",["7(?:12|2[14]|3[134]|4[47]|5[15]|[67]1|88)","7(?:12|2[14]|3[134]|4[47]|5(?:1|5[2-6])|[67]1|88)"]
 ,"0$1","",1]
@@ -12801,11 +13019,11 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,"$1","",1]
 ,[,"(140)(\\d{3})(\\d{4})","$1 $2 $3",["140"]
 ,"$1","",1]
-,[,"(\\d{4})(\\d{3})(\\d{4})(\\d{2})","$1 $2 $3 $4",["18[06]","18(?:03|6[12])"]
+,[,"(\\d{4})(\\d{3})(\\d{3})(\\d{3})","$1 $2 $3 $4",["18[06]","18(?:0[03]|6[12])"]
 ,"$1","",1]
 ]
 ,,[,,"NA","NA"]
-,,,[,,"1(?:600\\d{6}|8(?:0(?:0\\d{4,8}|3\\d{9})|6(?:0\\d{7}|[12]\\d{9})))","\\d{8,13}",,,"1800123456"]
+,,,[,,"1(?:600\\d{6}|8(?:0(?:0\\d{4,9}|3\\d{9})|6(?:0\\d{7}|[12]\\d{9})))","\\d{8,13}",,,"1800123456"]
 ,[,,"140\\d{7}","\\d{10}",,,"1409305260"]
 ,,,[,,"NA","NA"]
 ]
@@ -12846,7 +13064,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"IR":[,[,,"[1-8]\\d{9}|9(?:[0-4]\\d{8}|9\\d{2,8})","\\d{4,10}"]
 ,[,,"(?:1[137]|2[13-68]|3[1458]|4[145]|5[146-8]|6[146]|7[1467]|8[13467])\\d{8}","\\d{10}",,,"2123456789"]
-,[,,"9(?:0[12]|[1-3]\\d)\\d{7}","\\d{10}",,,"9123456789"]
+,[,,"9(?:0[1-3]|[13]\\d|2[0-2]|90)\\d{7}","\\d{10}",,,"9123456789"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
@@ -12916,7 +13134,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,"","",0]
 ]
 ,,[,,"NA","NA"]
-,,,[,,"848\\d{6}","\\d{9}",,,"848123456"]
+,1,,[,,"848\\d{6}","\\d{9}",,,"848123456"]
 ,[,,"NA","NA"]
 ,1,,[,,"NA","NA"]
 ]
@@ -12935,7 +13153,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"JM":[,[,,"[589]\\d{9}","\\d{7}(?:\\d{3})?"]
 ,[,,"876(?:5(?:0[12]|1[0-468]|2[35]|63)|6(?:0[1-3579]|1[027-9]|[23]\\d|40|5[06]|6[2-589]|7[05]|8[04]|9[4-9])|7(?:0[2-689]|[1-6]\\d|8[056]|9[45])|9(?:0[1-8]|1[02378]|[2-8]\\d|9[2-468]))\\d{4}","\\d{7}(?:\\d{3})?",,,"8765123456"]
-,[,,"876(?:2[1789]\\d|[348]\\d{2}|5(?:0[3-9]|27|6[0-24-9]|[3-578]\\d)|7(?:0[07]|7\\d|8[1-47-9]|9[0-36-9])|9(?:[01]9|9[0579]))\\d{4}","\\d{10}",,,"8762101234"]
+,[,,"876(?:2[16-9]\\d|[348]\\d{2}|5(?:0[3-9]|27|6[0-24-9]|[3-578]\\d)|7(?:0[07]|7\\d|8[1-47-9]|9[0-36-9])|9(?:[01]9|9[0579]))\\d{4}","\\d{10}",,,"8762101234"]
 ,[,,"8(?:00|44|55|66|77|88)[2-9]\\d{6}","\\d{10}",,,"8002123456"]
 ,[,,"900[2-9]\\d{6}","\\d{10}",,,"9002123456"]
 ,[,,"NA","NA"]
@@ -12946,9 +13164,9 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,[,,"NA","NA"]
 ,,,[,,"NA","NA"]
 ]
-,"JO":[,[,,"[235-9]\\d{7,8}","\\d{7,9}"]
-,[,,"(?:2(?:6(?:2[0-35-9]|3[0-57-8]|4[24-7]|5[0-24-8]|[6-8][02]|9[0-2])|7(?:0[1-79]|10|2[014-7]|3[0-689]|4[019]|5[0-3578]))|32(?:0[1-69]|1[1-35-7]|2[024-7]|3\\d|4[0-2]|[57][02]|60)|53(?:0[0-2]|[13][02]|2[0-59]|49|5[0-35-9]|6[15]|7[45]|8[1-6]|9[0-36-9])|6(?:2[50]0|300|4(?:0[0125]|1[2-7]|2[0569]|[38][07-9]|4[025689]|6[0-589]|7\\d|9[0-2])|5(?:[01][056]|2[034]|3[0-57-9]|4[17-8]|5[0-69]|6[0-35-9]|7[1-379]|8[0-68]|9[02-39]))|87(?:[02]0|7[08]|9[09]))\\d{4}","\\d{7,8}",,,"62001234"]
-,[,,"7(?:55|7[25-9]|8[05-9]|9[015-9])\\d{6}","\\d{9}",,,"790123456"]
+,"JO":[,[,,"[235-9]\\d{7,8}","\\d{8,9}"]
+,[,,"(?:2(?:6(?:2[0-35-9]|3[0-57-8]|4[24-7]|5[0-24-8]|[6-8][023]|9[0-3])|7(?:0[1-79]|10|2[014-7]|3[0-689]|4[019]|5[0-3578]))|32(?:0[1-69]|1[1-35-7]|2[024-7]|3\\d|4[0-3]|[57][023]|6[03])|53(?:0[0-3]|[13][023]|2[0-59]|49|5[0-35-9]|6[15]|7[45]|8[1-6]|9[0-36-9])|6(?:2[50]0|3(?:00|33)|4(?:0[0125]|1[2-7]|2[0569]|[38][07-9]|4[025689]|6[0-589]|7\\d|9[0-2])|5(?:[01][056]|2[034]|3[0-57-9]|4[17-8]|5[0-69]|6[0-35-9]|7[1-379]|8[0-68]|9[02-39]))|87(?:[02]0|7[08]|90))\\d{4}","\\d{8}",,,"62001234"]
+,[,,"7(?:55|7[025-9]|8[015-9]|9[0-25-9])\\d{6}","\\d{9}",,,"790123456"]
 ,[,,"80\\d{6}","\\d{8}",,,"80012345"]
 ,[,,"900\\d{5}","\\d{8}",,,"90012345"]
 ,[,,"85\\d{6}","\\d{8}",,,"85012345"]
@@ -12968,7 +13186,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"JP":[,[,,"[1-9]\\d{8,9}|00(?:[36]\\d{7,14}|7\\d{5,7}|8\\d{7})","\\d{8,17}"]
 ,[,,"(?:1(?:1[235-8]|2[3-6]|3[3-9]|4[2-6]|[58][2-8]|6[2-7]|7[2-9]|9[1-9])|2[2-9]\\d|[36][1-9]\\d|4(?:6[02-8]|[2-578]\\d|9[2-59])|5(?:6[1-9]|7[2-8]|[2-589]\\d)|7(?:3[4-9]|4[02-9]|[25-9]\\d)|8(?:3[2-9]|4[5-9]|5[1-9]|8[03-9]|[2679]\\d)|9(?:[679][1-9]|[2-58]\\d))\\d{6}","\\d{9}",,,"312345678"]
-,[,,"[7-9]0[1-9]\\d{7}","\\d{10}",,,"7012345678"]
+,[,,"[7-9]0[1-9]\\d{7}","\\d{10}",,,"9012345678"]
 ,[,,"120\\d{6}|800\\d{7}|00(?:37\\d{6,13}|66\\d{6,13}|777(?:[01]\\d{2}|5\\d{3}|8\\d{4})|882[1245]\\d{4})","\\d{8,17}",,,"120123456"]
 ,[,,"990\\d{6}","\\d{9}",,,"990123456"]
 ,[,,"NA","NA"]
@@ -13033,7 +13251,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"KE":[,[,,"20\\d{6,7}|[4-9]\\d{6,9}","\\d{7,10}"]
 ,[,,"20\\d{6,7}|4(?:[0136]\\d{7}|[245]\\d{5,7})|5(?:[08]\\d{7}|[1-79]\\d{5,7})|6(?:[01457-9]\\d{5,7}|[26]\\d{7})","\\d{7,9}",,,"202012345"]
-,[,,"7(?:[0-36]\\d|5[0-6]|7[0-5]|8[0-25-9])\\d{6}","\\d{9}",,,"712123456"]
+,[,,"7(?:[0-36]\\d|5[0-6]|7[0-5]|8[0-25-9]|9[0-4])\\d{6}","\\d{9}",,,"712123456"]
 ,[,,"800[24-8]\\d{5,6}","\\d{9,10}",,,"800223456"]
 ,[,,"900[02-9]\\d{5}","\\d{9}",,,"900223456"]
 ,[,,"NA","NA"]
@@ -13041,7 +13259,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,[,,"NA","NA"]
 ,"KE",254,"000","0",,,"0",,,,[[,"(\\d{2})(\\d{5,7})","$1 $2",["[24-6]"]
 ,"0$1","",0]
-,[,"(\\d{3})(\\d{6,7})","$1 $2",["7"]
+,[,"(\\d{3})(\\d{6})","$1 $2",["7"]
 ,"0$1","",0]
 ,[,"(\\d{3})(\\d{3})(\\d{3,4})","$1 $2 $3",["[89]"]
 ,"0$1","",0]
@@ -13073,7 +13291,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"KH":[,[,,"[1-9]\\d{7,9}","\\d{6,10}"]
 ,[,,"(?:2[3-6]|3[2-6]|4[2-4]|[5-7][2-5])(?:[237-9]|4[56]|5\\d|6\\d?)\\d{5}|23(?:4[234]|8\\d{2})\\d{4}","\\d{6,9}",,,"23756789"]
-,[,,"(?:1(?:[013-9]|2\\d?)|3[18]\\d|6[016-9]|7(?:[07-9]|6\\d)|8(?:[013-79]|8\\d)|9(?:6\\d|7\\d?|[0-589]))\\d{6}","\\d{8,9}",,,"91234567"]
+,[,,"(?:1(?:[013-9]|2\\d?)|3[18]\\d|6[016-9]|7(?:[07-9]|[16]\\d)|8(?:[013-79]|8\\d)|9(?:6\\d|7\\d?|[0-589]))\\d{6}","\\d{8,9}",,,"91234567"]
 ,[,,"1800(?:1\\d|2[019])\\d{4}","\\d{10}",,,"1800123456"]
 ,[,,"1900(?:1\\d|2[09])\\d{4}","\\d{10}",,,"1900123456"]
 ,[,,"NA","NA"]
@@ -13152,7 +13370,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"KR":[,[,,"[1-7]\\d{3,9}|8\\d{8}","\\d{4,10}"]
 ,[,,"(?:2|3[1-3]|[46][1-4]|5[1-5])(?:1\\d{2,3}|[1-9]\\d{6,7})","\\d{4,10}",,,"22123456"]
-,[,,"1[0-26-9]\\d{7,8}","\\d{9,10}",,,"1023456789"]
+,[,,"1[0-26-9]\\d{7,8}","\\d{9,10}",,,"1000000000"]
 ,[,,"80\\d{7}","\\d{9}",,,"801234567"]
 ,[,,"60[2-9]\\d{6}","\\d{9}",,,"602345678"]
 ,[,,"NA","NA"]
@@ -13186,15 +13404,15 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"KW":[,[,,"[12569]\\d{6,7}","\\d{7,8}"]
 ,[,,"(?:18\\d|2(?:[23]\\d{2}|4(?:[1-35-9]\\d|44)|5(?:0[034]|[2-46]\\d|5[1-3]|7[1-7])))\\d{4}","\\d{7,8}",,,"22345678"]
-,[,,"(?:5(?:[05]\\d|1[0-6])|6(?:0[034679]|5[015-9]|6\\d|7[067]|9[0369])|9(?:0[09]|4[049]|55|6[069]|[79]\\d|8[089]))\\d{5}","\\d{8}",,,"50012345"]
+,[,,"(?:5(?:[05]\\d{2}|1[0-7]\\d|2(?:22|55))|6(?:0[034679]\\d|5[015-9]\\d|6\\d{2}|7[067]\\d|9[0369]\\d)|9(?:0[09]\\d|22\\d|4[01479]\\d|55\\d|6[0679]\\d|[79]\\d{2}|8[057-9]\\d))\\d{4}","\\d{8}",,,"50012345"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
-,"KW",965,"00",,,,,,,,[[,"(\\d{4})(\\d{3,4})","$1 $2",["[1269]"]
+,"KW",965,"00",,,,,,,,[[,"(\\d{4})(\\d{3,4})","$1 $2",["[126]|9[04-9]|52[25]"]
 ,"","",0]
-,[,"(5[015]\\d)(\\d{5})","$1 $2",["5"]
+,[,"(\\d{3})(\\d{5})","$1 $2",["5[015]|92"]
 ,"","",0]
 ]
 ,,[,,"NA","NA"]
@@ -13204,7 +13422,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"KY":[,[,,"[3589]\\d{9}","\\d{7}(?:\\d{3})?"]
 ,[,,"345(?:2(?:22|44)|444|6(?:23|38|40)|7(?:4[35-79]|6[6-9]|77)|8(?:00|1[45]|25|[48]8)|9(?:14|4[035-9]))\\d{4}","\\d{7}(?:\\d{3})?",,,"3452221234"]
-,[,,"345(?:32[1-9]|5(?:1[67]|2[5-7]|4[6-8]|76)|9(?:1[67]|2[3-9]|3[689]))\\d{4}","\\d{10}",,,"3453231234"]
+,[,,"345(?:32[1-9]|5(?:1[67]|2[5-7]|4[6-8]|76)|9(?:1[67]|2[2-9]|3[689]))\\d{4}","\\d{10}",,,"3453231234"]
 ,[,,"8(?:00|44|55|66|77|88)[2-9]\\d{6}","\\d{10}",,,"8002345678"]
 ,[,,"900[2-9]\\d{6}|345976\\d{4}","\\d{10}",,,"9002345678"]
 ,[,,"NA","NA"]
@@ -13249,16 +13467,16 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,,,[,,"NA","NA"]
 ]
 ,"LB":[,[,,"[13-9]\\d{6,7}","\\d{7,8}"]
-,[,,"(?:[14-6]\\d{2}|7(?:[2-579]\\d|62|8[0-7])|[89][2-9]\\d)\\d{4}","\\d{7}",,,"1123456"]
-,[,,"(?:3\\d|7(?:[019]\\d|6[013-9]|8[89]))\\d{5}","\\d{7,8}",,,"71123456"]
+,[,,"(?:[14-6]\\d{2}|7(?:[2-57]\\d|62|8[0-7]|9[04-9])|8[02-9]\\d|9\\d{2})\\d{4}","\\d{7}",,,"1123456"]
+,[,,"(?:3\\d|7(?:[01]\\d|6[013-9]|8[89]|9[1-3])|81\\d)\\d{5}","\\d{7,8}",,,"71123456"]
 ,[,,"NA","NA"]
 ,[,,"9[01]\\d{6}","\\d{8}",,,"90123456"]
-,[,,"8[01]\\d{6}","\\d{8}",,,"80123456"]
+,[,,"80\\d{6}","\\d{8}",,,"80123456"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
-,"LB",961,"00","0",,,"0",,,,[[,"(\\d)(\\d{3})(\\d{3})","$1 $2 $3",["[13-6]|7(?:[2-579]|62|8[0-7])|[89][2-9]"]
+,"LB",961,"00","0",,,"0",,,,[[,"(\\d)(\\d{3})(\\d{3})","$1 $2 $3",["[13-6]|7(?:[2-57]|62|8[0-7]|9[04-9])|8[02-9]|9"]
 ,"0$1","",0]
-,[,"([7-9]\\d)(\\d{3})(\\d{3})","$1 $2 $3",["[89][01]|7(?:[019]|6[013-9]|8[89])"]
+,[,"([7-9]\\d)(\\d{3})(\\d{3})","$1 $2 $3",["[89][01]|7(?:[01]|6[013-9]|8[89]|9[1-3])"]
 ,"","",0]
 ]
 ,,[,,"NA","NA"]
@@ -13281,33 +13499,27 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"LI":[,[,,"6\\d{8}|[23789]\\d{6}","\\d{7,9}"]
 ,[,,"(?:2(?:01|1[27]|3\\d|6[02-578]|96)|3(?:7[0135-7]|8[048]|9[0269]))\\d{4}","\\d{7}",,,"2345678"]
-,[,,"6(?:51[01]|6(?:[01][0-4]|2[016-9]|88)|710)\\d{5}|7(?:36|4[25]|56|[7-9]\\d)\\d{4}","\\d{7,9}",,,"661234567"]
-,[,,"80(?:0(?:2[238]|79)|9\\d{2})\\d{2}","\\d{7}",,,"8002222"]
-,[,,"90(?:0(?:2[278]|79)|1(?:23|3[012])|6(?:4\\d|6[0126]))\\d{2}","\\d{7}",,,"9002222"]
+,[,,"6(?:51[01]|6(?:0[0-6]|2[016-9]|39))\\d{5}|7(?:[37-9]\\d|42|56)\\d{4}","\\d{7,9}",,,"660234567"]
+,[,,"80(?:02[28]|9\\d{2})\\d{2}","\\d{7}",,,"8002222"]
+,[,,"90(?:02[258]|1(?:23|3[14])|66[136])\\d{2}","\\d{7}",,,"9002222"]
 ,[,,"NA","NA"]
-,[,,"701\\d{4}","\\d{7}",,,"7011234"]
 ,[,,"NA","NA"]
-,"LI",423,"00","0",,,"0",,,,[[,"(\\d{3})(\\d{2})(\\d{2})","$1 $2 $3",["[23]|7[3-57-9]|87"]
+,[,,"NA","NA"]
+,"LI",423,"00","0",,,"0",,,,[[,"(\\d{3})(\\d{2})(\\d{2})","$1 $2 $3",["[23789]"]
 ,"","",0]
-,[,"(6\\d)(\\d{3})(\\d{3})","$1 $2 $3",["6"]
-,"","",0]
-,[,"(6[567]\\d)(\\d{3})(\\d{3})","$1 $2 $3",["6[567]"]
+,[,"(\\d{3})(\\d{3})(\\d{3})","$1 $2 $3",["6[56]"]
 ,"","",0]
 ,[,"(69)(7\\d{2})(\\d{4})","$1 $2 $3",["697"]
 ,"","",0]
-,[,"([7-9]0\\d)(\\d{2})(\\d{2})","$1 $2 $3",["[7-9]0"]
-,"","",0]
-,[,"([89]0\\d)(\\d{2})(\\d{2})(\\d{2})","$1 $2 $3 $4",["[89]0"]
-,"0$1","",0]
 ]
 ,,[,,"NA","NA"]
 ,,,[,,"NA","NA"]
-,[,,"87(?:0[128]|7[0-4])\\d{3}","\\d{7}",,,"8770123"]
-,,,[,,"697(?:[35]6|4[25]|[7-9]\\d)\\d{4}","\\d{9}",,,"697361234"]
+,[,,"870(?:28|87)\\d{2}","\\d{7}",,,"8702812"]
+,,,[,,"697(?:42|56|[7-9]\\d)\\d{4}","\\d{9}",,,"697861234"]
 ]
 ,"LK":[,[,,"[1-9]\\d{8}","\\d{7,9}"]
 ,[,,"(?:[189]1|2[13-7]|3[1-8]|4[157]|5[12457]|6[35-7])[2-57]\\d{6}","\\d{7,9}",,,"112345678"]
-,[,,"7[125-8]\\d{7}","\\d{9}",,,"712345678"]
+,[,,"7[0125-8]\\d{7}","\\d{9}",,,"712345678"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
@@ -13323,9 +13535,9 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,[,,"NA","NA"]
 ,,,[,,"NA","NA"]
 ]
-,"LR":[,[,,"2\\d{7}|[37-9]\\d{8}|[45]\\d{6}","\\d{7,9}"]
+,"LR":[,[,,"2\\d{7,8}|[37-9]\\d{8}|4\\d{6}|5\\d{6,8}","\\d{7,9}"]
 ,[,,"2\\d{7}","\\d{8}",,,"21234567"]
-,[,,"(?:330\\d|4[67]|5\\d|77\\d{2}|88\\d{2}|994\\d)\\d{5}","\\d{7,9}",,,"770123456"]
+,[,,"(?:330\\d|4[67]|5\\d|77\\d{2}|88\\d{2}|994\\d)\\d{5}|(?:20\\d{3}|33(?:0\\d{2}|2(?:02|5\\d))|555\\d{2}|77[0567]\\d{2}|88[068]\\d{2}|994\\d{2})\\d{4}","\\d{7,9}",,,"770123456"]
 ,[,,"NA","NA"]
 ,[,,"90[03]\\d{6}","\\d{9}",,,"900123456"]
 ,[,,"NA","NA"]
@@ -13333,7 +13545,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,[,,"332(?:0[02]|5\\d)\\d{4}","\\d{9}",,,"332001234"]
 ,"LR",231,"00","0",,,"0",,,,[[,"(2\\d)(\\d{3})(\\d{3})","$1 $2 $3",["2"]
 ,"0$1","",0]
-,[,"([79]\\d{2})(\\d{3})(\\d{3})","$1 $2 $3",["[79]"]
+,[,"(\\d{3})(\\d{3})(\\d{3})","$1 $2 $3",["[2579]"]
 ,"0$1","",0]
 ,[,"([4-6])(\\d{3})(\\d{3})","$1 $2 $3",["[4-6]"]
 ,"0$1","",0]
@@ -13383,10 +13595,10 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,,,[,,"NA","NA"]
 ]
 ,"LU":[,[,,"[24-9]\\d{3,10}|3(?:[0-46-9]\\d{2,9}|5[013-9]\\d{1,8})","\\d{4,11}"]
-,[,,"(?:2(?:[259]\\d{2,9}|[346-8]\\d{4}(?:\\d{2})?)|(?:[3457]\\d{2}|8(?:0[2-9]|[13-9]\\d)|9(?:0[89]|[2-579]\\d))\\d{1,8})","\\d{4,11}",,,"27123456"]
+,[,,"(?:2[2-9]\\d{2,9}|(?:[3457]\\d{2}|8(?:0[2-9]|[13-9]\\d)|9(?:0[89]|[2-579]\\d))\\d{1,8})","\\d{4,11}",,,"27123456"]
 ,[,,"6[2679][18]\\d{6}","\\d{9}",,,"628123456"]
 ,[,,"800\\d{5}","\\d{8}",,,"80012345"]
-,[,,"90[01]\\d{5}","\\d{8}",,,"90012345"]
+,[,,"90[015]\\d{5}","\\d{8}",,,"90012345"]
 ,[,,"801\\d{5}","\\d{8}",,,"80112345"]
 ,[,,"70\\d{6}","\\d{8}",,,"70123456"]
 ,[,,"20(?:1\\d{5}|[2-689]\\d{1,7})","\\d{4,10}",,,"20201234"]
@@ -13402,9 +13614,9 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,"","$CC $1",0]
 ,[,"(\\d{2})(\\d{2})(\\d{2})(\\d{2})(\\d{1,2})","$1 $2 $3 $4 $5",["2(?:[0367]|4[3-8])"]
 ,"","$CC $1",0]
-,[,"(\\d{2})(\\d{2})(\\d{2})(\\d{1,4})","$1 $2 $3 $4",["2(?:[12589]|4[12])|[3-5]|7[1-9]|[89](?:[1-9]|0[2-9])"]
+,[,"(\\d{2})(\\d{2})(\\d{2})(\\d{1,4})","$1 $2 $3 $4",["2(?:[12589]|4[12])|[3-5]|7[1-9]|8(?:[1-9]|0[2-9])|9(?:[1-9]|0[2-46-9])"]
 ,"","$CC $1",0]
-,[,"(\\d{3})(\\d{2})(\\d{3})","$1 $2 $3",["[89]0[01]|70"]
+,[,"(\\d{3})(\\d{2})(\\d{3})","$1 $2 $3",["70|80[01]|90[015]"]
 ,"","$CC $1",0]
 ,[,"(\\d{3})(\\d{3})(\\d{3})","$1 $2 $3",["6"]
 ,"","$CC $1",0]
@@ -13446,7 +13658,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"MA":[,[,,"[5689]\\d{8}","\\d{9}"]
 ,[,,"5(?:2(?:(?:[015-7]\\d|2[2-9]|3[2-57]|4[2-8]|8[235-7])\\d|9(?:0\\d|[89]0))|3(?:(?:[0-4]\\d|[57][2-9]|6[235-8]|9[3-9])\\d|8(?:0\\d|[89]0)))\\d{4}","\\d{9}",,,"520123456"]
-,[,,"6(?:0[0-8]|[12-79]\\d|8[01])\\d{6}","\\d{9}",,,"650123456"]
+,[,,"6(?:0[0-8]|[12-79]\\d|8[017])\\d{6}","\\d{9}",,,"650123456"]
 ,[,,"80\\d{7}","\\d{9}",,,"801234567"]
 ,[,,"89\\d{7}","\\d{9}",,,"891234567"]
 ,[,,"NA","NA"]
@@ -13468,7 +13680,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"MC":[,[,,"[4689]\\d{7,8}","\\d{8,9}"]
 ,[,,"870\\d{5}|9[2-47-9]\\d{6}","\\d{8}",,,"99123456"]
-,[,,"6\\d{8}|4(?:4\\d|5[2-9])\\d{5}","\\d{8,9}",,,"612345678"]
+,[,,"6\\d{8}|4(?:4\\d|5[1-9])\\d{5}","\\d{8,9}",,,"612345678"]
 ,[,,"90\\d{6}","\\d{8}",,,"90123456"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
@@ -13490,7 +13702,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"MD":[,[,,"[235-9]\\d{7}","\\d{8}"]
 ,[,,"(?:2(?:1[0569]|2\\d|3[015-7]|4[1-46-9]|5[0-24689]|6[2-589]|7[1-37]|9[1347-9])|5(?:33|5[257]))\\d{5}","\\d{8}",,,"22212345"]
-,[,,"(?:562\\d|6(?:[089]\\d{2}|1[01]\\d|21\\d|50\\d|7(?:[1-6]\\d|7[0-4]))|7(?:6[07]|7[457-9]|[89]\\d)\\d)\\d{4}","\\d{8}",,,"65012345"]
+,[,,"(?:562\\d|6(?:[089]\\d{2}|[12][01]\\d|7(?:[1-6]\\d|7[0-4]))|7(?:6[07]|7[457-9]|[89]\\d)\\d)\\d{4}","\\d{8}",,,"62112345"]
 ,[,,"800\\d{5}","\\d{8}",,,"80012345"]
 ,[,,"90[056]\\d{5}","\\d{8}",,,"90012345"]
 ,[,,"808\\d{5}","\\d{8}",,,"80812345"]
@@ -13509,14 +13721,14 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,,,[,,"NA","NA"]
 ]
 ,"ME":[,[,,"[2-9]\\d{7,8}","\\d{6,9}"]
-,[,,"(?:20[2-8]|3(?:0[2-7]|1[35-7]|2[3567]|3[4-7])|4(?:0[237]|1[27])|5(?:0[47]|1[27]|2[378]))\\d{5}","\\d{6,8}",,,"30234567"]
-,[,,"6(?:32\\d|[89]\\d{2}|7(?:[0-8]\\d|9(?:[3-9]|[0-2]\\d)))\\d{4}","\\d{8,9}",,,"67622901"]
-,[,,"800[28]\\d{4}","\\d{8}",,,"80080002"]
-,[,,"(?:88\\d|9(?:4[13-8]|5[16-8]))\\d{5}","\\d{8}",,,"94515151"]
+,[,,"(?:20[2-8]|3(?:0[2-7]|[12][35-7]|3[4-7])|4(?:0[2367]|1[267])|5(?:0[467]|1[267]|2[367]))\\d{5}","\\d{6,8}",,,"30234567"]
+,[,,"6(?:00\\d|32\\d|[89]\\d{2}|61\\d|7(?:[0-8]\\d|9(?:[3-9]|[0-2]\\d)))\\d{4}","\\d{8,9}",,,"67622901"]
+,[,,"80\\d{6}","\\d{8}",,,"80080002"]
+,[,,"(?:9(?:4[1568]|5[178]))\\d{5}","\\d{8}",,,"94515151"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
 ,[,,"78[1-9]\\d{5}","\\d{8}",,,"78108780"]
-,"ME",382,"00","0",,,"0",,,,[[,"(\\d{2})(\\d{3})(\\d{3})","$1 $2 $3",["[2-57-9]|6[3789]","[2-57-9]|6(?:[389]|7(?:[0-8]|9[3-9]))"]
+,"ME",382,"00","0",,,"0",,,,[[,"(\\d{2})(\\d{3})(\\d{3})","$1 $2 $3",["[2-57-9]|6[036-9]","[2-57-9]|6(?:[03689]|7(?:[0-8]|9[3-9]))"]
 ,"0$1","",0]
 ,[,"(67)(9)(\\d{3})(\\d{3})","$1 $2 $3 $4",["679","679[0-2]"]
 ,"0$1","",0]
@@ -13612,7 +13824,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"MM":[,[,,"[14578]\\d{5,7}|[26]\\d{5,8}|9(?:2\\d{0,2}|[58]|3\\d|4\\d{1,2}|6\\d?|[79]\\d{0,2})\\d{6}","\\d{5,10}"]
 ,[,,"1(?:2\\d{1,2}|[3-5]\\d|6\\d?|[89][0-6]\\d)\\d{4}|2(?:[236-9]\\d{4}|4(?:0\\d{5}|\\d{4})|5(?:1\\d{3,6}|[02-9]\\d{3,5}))|4(?:2[245-8]|[346][2-6]|5[3-5])\\d{4}|5(?:2(?:20?|[3-8])|3[2-68]|4(?:21?|[4-8])|5[23]|6[2-4]|7[2-8]|8[24-7]|9[2-7])\\d{4}|6(?:0[23]|1[2356]|[24][2-6]|3[24-6]|5[2-4]|6[2-8]|7(?:[2367]|4\\d|5\\d?|8[145]\\d)|8[245]|9[24])\\d{4}|7(?:[04][24-8]|[15][2-7]|22|3[2-4])\\d{4}|8(?:1(?:2\\d?|[3-689])|2[2-8]|3[24]|4[24-7]|5[245]|6[23])\\d{4}","\\d{5,9}",,,"1234567"]
-,[,,"17[01]\\d{4}|9(?:2(?:[0-4]|5\\d{2})|3[136]\\d|4(?:0[0-4]\\d|[1379]\\d|[24][0-589]\\d|5\\d{2}|88)|5[0-6]|61?\\d|7(?:3\\d|9\\d{2})|8\\d|9(?:1\\d|7\\d{2}|[089]))\\d{5}","\\d{7,10}",,,"92123456"]
+,[,,"17[01]\\d{4}|9(?:2(?:[0-4]|5\\d{2}|6[0-5]\\d)|3[0-36]\\d|4(?:0[0-4]\\d|[1379]\\d|2\\d{2}|4[0-589]\\d|5\\d{2}|88)|5[0-6]|61?\\d|7(?:3\\d|[789]\\d{2})|8\\d|9(?:1\\d|[67]\\d{2}|[089]))\\d{5}","\\d{7,10}",,,"92123456"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
@@ -13628,11 +13840,13 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,"0$1","",0]
 ,[,"(\\d{2})(\\d{2})(\\d{3,4})","$1 $2 $3",["[4-8]"]
 ,"0$1","",0]
-,[,"(9)(\\d{3})(\\d{4,6})","$1 $2 $3",["9(?:2[0-4]|[35-9]|4[13789])"]
+,[,"(9)(\\d{3})(\\d{4,6})","$1 $2 $3",["9(?:2[0-4]|[35-9]|4[137-9])"]
 ,"0$1","",0]
-,[,"(9)(4\\d{4})(\\d{4})","$1 $2 $3",["94[0245]"]
+,[,"(9)([34]\\d{4})(\\d{4})","$1 $2 $3",["9(?:3[0-36]|4[0-57-9])"]
 ,"0$1","",0]
-,[,"(9)(\\d{3})(\\d{3})(\\d{3})","$1 $2 $3 $4",["925"]
+,[,"(9)(\\d{3})(\\d{3})(\\d{3})","$1 $2 $3 $4",["92[56]"]
+,"0$1","",0]
+,[,"(9)(\\d{3})(\\d{3})(\\d{2})","$1 $2 $3 $4",["93"]
 ,"0$1","",0]
 ]
 ,,[,,"NA","NA"]
@@ -13642,7 +13856,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"MN":[,[,,"[12]\\d{7,9}|[57-9]\\d{7}","\\d{6,10}"]
 ,[,,"[12](?:1\\d|2(?:[1-3]\\d?|7\\d)|3[2-8]\\d{1,2}|4[2-68]\\d{1,2}|5[1-4689]\\d{1,2})\\d{5}|5[0568]\\d{6}","\\d{6,10}",,,"50123456"]
-,[,,"(?:8[689]|9[013-9])\\d{6}","\\d{8}",,,"88123456"]
+,[,,"(?:8[0689]|9[013-9])\\d{6}","\\d{8}",,,"88123456"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
@@ -13709,7 +13923,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"MR":[,[,,"[2-48]\\d{7}","\\d{8}"]
 ,[,,"25[08]\\d{5}|35\\d{6}|45[1-7]\\d{5}","\\d{8}",,,"35123456"]
-,[,,"(?:2(?:2\\d|70)|3(?:3\\d|6[1-36]|7[1-3])|4(?:[49]\\d|6[0457-9]|7[4-9]|8[01346-8]))\\d{5}","\\d{8}",,,"22123456"]
+,[,,"[234][0-46-9]\\d{6}","\\d{8}",,,"22123456"]
 ,[,,"800\\d{5}","\\d{8}",,,"80012345"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
@@ -13752,7 +13966,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"MU":[,[,,"[2-9]\\d{6,7}","\\d{7,8}"]
 ,[,,"(?:2(?:[03478]\\d|1[0-7]|6[1-69])|4(?:[013568]\\d|2[4-7])|5(?:44\\d|471)|6\\d{2}|8(?:14|3[129]))\\d{4}","\\d{7,8}",,,"2012345"]
-,[,,"5(?:2[59]\\d|4(?:2[1-389]|4\\d|7[1-9]|9\\d)|7\\d{2}|8(?:[256]\\d|7[15-8])|9[0-8]\\d)\\d{4}","\\d{8}",,,"52512345"]
+,[,,"5(?:2[59]\\d|4(?:2[1-389]|4\\d|7[1-9]|9\\d)|7\\d{2}|8(?:[0-2568]\\d|7[15-8])|9[0-8]\\d)\\d{4}","\\d{8}",,,"52512345"]
 ,[,,"80[012]\\d{4}","\\d{7}",,,"8001234"]
 ,[,,"30\\d{5}","\\d{7}",,,"3012345"]
 ,[,,"NA","NA"]
@@ -13770,7 +13984,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"MV":[,[,,"[3467]\\d{6}|9(?:00\\d{7}|\\d{6})","\\d{7,10}"]
 ,[,,"(?:3(?:0[01]|3[0-59])|6(?:[567][02468]|8[024689]|90))\\d{4}","\\d{7}",,,"6701234"]
-,[,,"(?:46[46]|7[3-9]\\d|9[16-9]\\d)\\d{4}","\\d{7}",,,"7712345"]
+,[,,"(?:46[46]|7[3-9]\\d|9[15-9]\\d)\\d{4}","\\d{7}",,,"7712345"]
 ,[,,"NA","NA"]
 ,[,,"900\\d{7}","\\d{10}",,,"9001234567"]
 ,[,,"NA","NA"]
@@ -13807,29 +14021,29 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,,,[,,"NA","NA"]
 ]
 ,"MX":[,[,,"[1-9]\\d{9,10}","\\d{7,11}"]
-,[,,"(?:33|55|81)\\d{8}|(?:2(?:2[2-9]|3[1-35-8]|4[13-9]|7[1-689]|8[1-578]|9[467])|3(?:1[1-79]|[2458][1-9]|7[1-8]|9[1-5])|4(?:1[1-57-9]|[24-6][1-9]|[37][1-8]|8[1-35-9]|9[2-689])|5(?:88|9[1-79])|6(?:1[2-68]|[234][1-9]|5[1-3689]|6[12457-9]|7[1-7]|8[67]|9[4-8])|7(?:[13467][1-9]|2[1-8]|5[13-9]|8[1-69]|9[17])|8(?:2[13-689]|3[1-6]|4[124-6]|6[1246-9]|7[1-378]|9[12479])|9(?:1[346-9]|2[1-4]|3[2-46-8]|5[1348]|[69][1-9]|7[12]|8[1-8]))\\d{7}","\\d{7,10}",,,"2221234567"]
+,[,,"(?:33|55|81)\\d{8}|(?:2(?:0[01]|2[2-9]|3[1-35-8]|4[13-9]|7[1-689]|8[1-578]|9[467])|3(?:1[1-79]|[2458][1-9]|7[1-8]|9[1-5])|4(?:1[1-57-9]|[24-6][1-9]|[37][1-8]|8[1-35-9]|9[2-689])|5(?:88|9[1-79])|6(?:1[2-68]|[234][1-9]|5[1-3689]|6[12457-9]|7[1-7]|8[67]|9[4-8])|7(?:[13467][1-9]|2[1-8]|5[13-9]|8[1-69]|9[17])|8(?:2[13-689]|3[1-6]|4[124-6]|6[1246-9]|7[1-378]|9[12479])|9(?:1[346-9]|2[1-4]|3[2-46-8]|5[1348]|[69][1-9]|7[12]|8[1-8]))\\d{7}","\\d{7,10}",,,"2221234567"]
 ,[,,"1(?:(?:33|55|81)\\d{8}|(?:2(?:2[2-9]|3[1-35-8]|4[13-9]|7[1-689]|8[1-578]|9[467])|3(?:1[1-79]|[2458][1-9]|7[1-8]|9[1-5])|4(?:1[1-57-9]|[24-6][1-9]|[37][1-8]|8[1-35-9]|9[2-689])|5(?:88|9[1-79])|6(?:1[2-68]|[2-4][1-9]|5[1-3689]|6[12457-9]|7[1-7]|8[67]|9[4-8])|7(?:[13467][1-9]|2[1-8]|5[13-9]|8[1-69]|9[17])|8(?:2[13-689]|3[1-6]|4[124-6]|6[1246-9]|7[1-378]|9[12479])|9(?:1[346-9]|2[1-4]|3[2-46-8]|5[1348]|[69][1-9]|7[12]|8[1-8]))\\d{7})","\\d{11}",,,"12221234567"]
-,[,,"800\\d{7}","\\d{10}",,,"8001234567"]
+,[,,"8(?:00|88)\\d{7}","\\d{10}",,,"8001234567"]
 ,[,,"900\\d{7}","\\d{10}",,,"9001234567"]
-,[,,"NA","NA"]
-,[,,"NA","NA"]
+,[,,"300\\d{7}","\\d{10}",,,"3001234567"]
+,[,,"500\\d{7}","\\d{10}",,,"5001234567"]
 ,[,,"NA","NA"]
 ,"MX",52,"0[09]","01",,,"0[12]|04[45](\\d{10})","1$1",,,[[,"([358]\\d)(\\d{4})(\\d{4})","$1 $2 $3",["33|55|81"]
 ,"01 $1","",1]
-,[,"(\\d{3})(\\d{3})(\\d{4})","$1 $2 $3",["[2467]|3[12457-9]|5[89]|8[02-9]|9[0-35-9]"]
+,[,"(\\d{3})(\\d{3})(\\d{4})","$1 $2 $3",["[2467]|3[0-2457-9]|5[089]|8[02-9]|9[0-35-9]"]
 ,"01 $1","",1]
 ,[,"(1)([358]\\d)(\\d{4})(\\d{4})","044 $2 $3 $4",["1(?:33|55|81)"]
 ,"$1","",1]
-,[,"(1)(\\d{3})(\\d{3})(\\d{4})","044 $2 $3 $4",["1(?:[2467]|3[12457-9]|5[89]|8[2-9]|9[1-35-9])"]
+,[,"(1)(\\d{3})(\\d{3})(\\d{4})","044 $2 $3 $4",["1(?:[2467]|3[0-2457-9]|5[089]|8[2-9]|9[1-35-9])"]
 ,"$1","",1]
 ]
 ,[[,"([358]\\d)(\\d{4})(\\d{4})","$1 $2 $3",["33|55|81"]
 ,"01 $1","",1]
-,[,"(\\d{3})(\\d{3})(\\d{4})","$1 $2 $3",["[2467]|3[12457-9]|5[89]|8[02-9]|9[0-35-9]"]
+,[,"(\\d{3})(\\d{3})(\\d{4})","$1 $2 $3",["[2467]|3[0-2457-9]|5[089]|8[02-9]|9[0-35-9]"]
 ,"01 $1","",1]
 ,[,"(1)([358]\\d)(\\d{4})(\\d{4})","$1 $2 $3 $4",["1(?:33|55|81)"]
 ]
-,[,"(1)(\\d{3})(\\d{3})(\\d{4})","$1 $2 $3 $4",["1(?:[2467]|3[12457-9]|5[89]|8[2-9]|9[1-35-9])"]
+,[,"(1)(\\d{3})(\\d{3})(\\d{4})","$1 $2 $3 $4",["1(?:[2467]|3[0-2457-9]|5[089]|8[2-9]|9[1-35-9])"]
 ]
 ]
 ,[,,"NA","NA"]
@@ -13839,7 +14053,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"MY":[,[,,"[13-9]\\d{7,9}","\\d{6,10}"]
 ,[,,"(?:3[2-9]\\d|[4-9][2-9])\\d{6}","\\d{6,9}",,,"323456789"]
-,[,,"1(?:1[1-35]\\d{2}|[02-4679][2-9]\\d|59\\d{2}|8(?:1[23]|[2-9]\\d))\\d{5}","\\d{9,10}",,,"123456789"]
+,[,,"1(?:1[1-5]\\d{2}|[02-4679][2-9]\\d|59\\d{2}|8(?:1[23]|[2-9]\\d))\\d{5}","\\d{9,10}",,,"123456789"]
 ,[,,"1[378]00\\d{6}","\\d{10}",,,"1300123456"]
 ,[,,"1600\\d{6}","\\d{10}",,,"1600123456"]
 ,[,,"NA","NA"]
@@ -13882,7 +14096,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,,,[,,"NA","NA"]
 ]
 ,"NA":[,[,,"[68]\\d{7,8}","\\d{8,9}"]
-,[,,"6(?:1(?:17|2(?:[0189]\\d|[2-6]|7\\d?)|3(?:[01378]|2\\d)|4[01]|69|7[014])|2(?:17|5(?:[0-36-8]|4\\d?)|69|70)|3(?:17|2(?:[0237]\\d?|[14-689])|34|6[29]|7[01]|81)|4(?:17|2(?:[012]|7?)|4(?:[06]|1\\d)|5(?:[01357]|[25]\\d?)|69|7[01])|5(?:17|2(?:[0459]|[23678]\\d?)|69|7[01])|6(?:17|2(?:5|6\\d?)|38|42|69|7[01])|7(?:17|2(?:[569]|[234]\\d?)|3(?:0\\d?|[13])|69|7[01]))\\d{4}","\\d{8,9}",,,"61221234"]
+,[,,"6(?:1(?:17|2(?:[0189]\\d|[2-6]|7\\d?)|3(?:[01378]|2\\d)|4[01]|69|7[014])|2(?:17|5(?:[0-36-8]|4\\d?)|69|70)|3(?:17|2(?:[0237]\\d?|[14-689])|34|6[289]|7[01]|81)|4(?:17|2(?:[012]|7?)|4(?:[06]|1\\d)|5(?:[01357]|[25]\\d?)|69|7[01])|5(?:17|2(?:[0459]|[23678]\\d?)|69|7[01])|6(?:17|2(?:5|6\\d?)|38|42|69|7[01])|7(?:17|2(?:[569]|[234]\\d?)|3(?:0\\d?|[13])|69|7[01]))\\d{4}","\\d{8,9}",,,"61221234"]
 ,[,,"(?:60|8[125])\\d{7}","\\d{9}",,,"811234567"]
 ,[,,"NA","NA"]
 ,[,,"8701\\d{5}","\\d{9}",,,"870123456"]
@@ -13891,7 +14105,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,[,,"8(?:3\\d{2}|86)\\d{5}","\\d{8,9}",,,"88612345"]
 ,"NA",264,"00","0",,,"0",,,,[[,"(8\\d)(\\d{3})(\\d{4})","$1 $2 $3",["8[1235]"]
 ,"0$1","",0]
-,[,"(6\\d)(\\d{2,3})(\\d{4})","$1 $2 $3",["6"]
+,[,"(6\\d)(\\d{3})(\\d{3,4})","$1 $2 $3",["6"]
 ,"0$1","",0]
 ,[,"(88)(\\d{3})(\\d{3})","$1 $2 $3",["88"]
 ,"0$1","",0]
@@ -13921,7 +14135,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"NE":[,[,,"[0289]\\d{7}","\\d{8}"]
 ,[,,"2(?:0(?:20|3[1-7]|4[134]|5[14]|6[14578]|7[1-578])|1(?:4[145]|5[14]|6[14-68]|7[169]|88))\\d{4}","\\d{8}",,,"20201234"]
-,[,,"(?:89|9\\d)\\d{6}","\\d{8}",,,"93123456"]
+,[,,"(?:8[089]|9\\d)\\d{6}","\\d{8}",,,"93123456"]
 ,[,,"08\\d{6}","\\d{8}",,,"08123456"]
 ,[,,"09\\d{6}","\\d{8}",,,"09123456"]
 ,[,,"NA","NA"]
@@ -14042,7 +14256,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"NP":[,[,,"[1-8]\\d{7}|9(?:[1-69]\\d{6,8}|7[2-6]\\d{5,7}|8\\d{8})","\\d{6,10}"]
 ,[,,"(?:1[0-6]\\d|2[13-79][2-6]|3[135-8][2-6]|4[146-9][2-6]|5[135-7][2-6]|6[13-9][2-6]|7[15-9][2-6]|8[1-46-9][2-6]|9[1-79][2-6])\\d{5}","\\d{6,8}",,,"14567890"]
-,[,,"9(?:6[013]|7[245]|8[01456])\\d{7}","\\d{10}",,,"9841234567"]
+,[,,"9(?:6[013]|7[245]|8[0-24-6])\\d{7}","\\d{10}",,,"9841234567"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
@@ -14089,20 +14303,20 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,,,[,,"NA","NA"]
 ]
 ,"NZ":[,[,,"6[235-9]\\d{6}|[2-57-9]\\d{7,10}","\\d{7,11}"]
-,[,,"(?:3[2-79]|[49][2-689]|6[235-9]|7[2-5789])\\d{6}|24099\\d{3}","\\d{7,8}",,,"32345678"]
+,[,,"(?:3[2-79]|[49][2-9]|6[235-9]|7[2-57-9])\\d{6}|24099\\d{3}","\\d{7,8}",,,"32345678"]
 ,[,,"2(?:[028]\\d{7,8}|1(?:[03]\\d{5,7}|[12457]\\d{5,6}|[689]\\d{5})|[79]\\d{7})","\\d{8,10}",,,"211234567"]
 ,[,,"508\\d{6,7}|80\\d{6,8}","\\d{8,10}",,,"800123456"]
 ,[,,"90\\d{7,9}","\\d{9,11}",,,"900123456"]
 ,[,,"NA","NA"]
+,[,,"70\\d{7}","\\d{9}",,,"701234567"]
 ,[,,"NA","NA"]
-,[,,"NA","NA"]
-,"NZ",64,"0(?:0|161)","0",,,"0",,"00",,[[,"([34679])(\\d{3})(\\d{4})","$1-$2 $3",["[3467]|9[1-9]"]
+,"NZ",64,"0(?:0|161)","0",,,"0",,"00",,[[,"([34679])(\\d{3})(\\d{4})","$1-$2 $3",["[346]|7[2-57-9]|9[1-9]"]
 ,"0$1","",0]
 ,[,"(24099)(\\d{3})","$1 $2",["240","2409","24099"]
 ,"0$1","",0]
 ,[,"(\\d{2})(\\d{3})(\\d{3})","$1 $2 $3",["21"]
 ,"0$1","",0]
-,[,"(\\d{2})(\\d{3})(\\d{3,5})","$1 $2 $3",["2(?:1[1-9]|[69]|7[0-35-9])|86"]
+,[,"(\\d{2})(\\d{3})(\\d{3,5})","$1 $2 $3",["2(?:1[1-9]|[69]|7[0-35-9])|70|86"]
 ,"0$1","",0]
 ,[,"(2\\d)(\\d{3,4})(\\d{4})","$1 $2 $3",["2[028]"]
 ,"0$1","",0]
@@ -14114,11 +14328,11 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,[,,"NA","NA"]
 ,,,[,,"NA","NA"]
 ]
-,"OM":[,[,,"(?:2[2-6]|5|9[1-9])\\d{6}|800\\d{5,6}","\\d{7,9}"]
+,"OM":[,[,,"(?:2[2-6]|5|9\\d)\\d{6}|800\\d{5,6}","\\d{7,9}"]
 ,[,,"2[2-6]\\d{6}","\\d{8}",,,"23123456"]
-,[,,"9[1-9]\\d{6}","\\d{8}",,,"92123456"]
+,[,,"9(?:0[1-9]|[1-9]\\d)\\d{5}","\\d{8}",,,"92123456"]
 ,[,,"8007\\d{4,5}|500\\d{4}","\\d{7,9}",,,"80071234"]
-,[,,"NA","NA"]
+,[,,"(?:900)\\d{5}","\\d{8}",,,"90012345"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
@@ -14135,10 +14349,10 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,,,[,,"NA","NA"]
 ]
 ,"PA":[,[,,"[1-9]\\d{6,7}","\\d{7,8}"]
-,[,,"(?:1(?:0[02-579]|19|2[37]|3[03]|4[479]|57|65|7[016-8]|8[58]|9[1349])|2(?:[0235679]\\d|1[0-7]|4[04-9]|8[028])|3(?:[09]\\d|1[14-7]|2[0-3]|3[03]|4[0457]|5[56]|6[068]|7[06-8]|8[089])|4(?:3[013-69]|4\\d|7[0-689])|5(?:[01]\\d|2[0-7]|[56]0|79)|7(?:0[09]|2[0-267]|3[06]|[49]0|5[06-9]|7[0-24-7]|8[89])|8(?:[34]\\d|5[0-4]|8[02])|9(?:0[6-8]|1[016-8]|2[036-8]|3[3679]|40|5[0489]|6[06-9]|7[046-9]|8[36-8]|9[1-9]))\\d{4}","\\d{7}",,,"2001234"]
+,[,,"(?:1(?:0[0-8]|1[49]|2[37]|3[0137]|4[147]|5[05]|6[58]|7[0167]|8[58]|9[139])|2(?:[0235679]\\d|1[0-7]|4[04-9]|8[028])|3(?:[09]\\d|1[014-7]|2[0-3]|3[03]|4[03-57]|55|6[068]|7[06-8]|8[06-9])|4(?:3[013-69]|4\\d|7[0-589])|5(?:[01]\\d|2[0-7]|[56]0|79)|7(?:0[09]|2[0-267]|3[06]|[469]0|5[06-9]|7[0-24-79]|8[7-9])|8(?:09|[34]\\d|5[0134]|8[02])|9(?:0[6-9]|1[016-8]|2[036-8]|3[3679]|40|5[0489]|6[06-9]|7[046-9]|8[36-8]|9[1-9]))\\d{4}","\\d{7}",,,"2001234"]
 ,[,,"(?:1[16]1|21[89]|8(?:1[01]|7[23]))\\d{4}|6(?:[024-9]\\d|1[0-5]|3[0-24-9])\\d{5}","\\d{7,8}",,,"60012345"]
 ,[,,"80[09]\\d{4}","\\d{7}",,,"8001234"]
-,[,,"(?:779|8(?:2[235]|55|60|7[578]|86|95)|9(?:0[0-2]|81))\\d{4}","\\d{7}",,,"8601234"]
+,[,,"(?:779|8(?:55|60|7[78])|9(?:00|81))\\d{4}","\\d{7}",,,"8601234"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
@@ -14212,7 +14426,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"PH":[,[,,"2\\d{5,7}|[3-9]\\d{7,9}|1800\\d{7,9}","\\d{5,13}"]
 ,[,,"2\\d{5}(?:\\d{2})?|(?:3[2-68]|4[2-9]|5[2-6]|6[2-58]|7[24578]|8[2-8])\\d{7}|88(?:22\\d{6}|42\\d{4})","\\d{5,10}",,,"21234567"]
-,[,,"(?:81[37]|9(?:0[5-9]|1[024-9]|2[0-35-9]|3[02-9]|4[236-9]|7[34-79]|89|9[4-9]))\\d{7}","\\d{10}",,,"9051234567"]
+,[,,"(?:81[37]|9(?:0[5-9]|1[024-9]|2[0-35-9]|3[02-9]|4[236-9]|50|7[34-79]|89|9[4-9]))\\d{7}","\\d{10}",,,"9051234567"]
 ,[,,"1800\\d{7,9}","\\d{11,13}",,,"180012345678"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
@@ -14242,7 +14456,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"PK":[,[,,"1\\d{8}|[2-8]\\d{5,11}|9(?:[013-9]\\d{4,9}|2\\d(?:111\\d{6}|\\d{3,7}))","\\d{6,12}"]
 ,[,,"(?:21|42)[2-9]\\d{7}|(?:2[25]|4[0146-9]|5[1-35-7]|6[1-8]|7[14]|8[16]|91)[2-9]\\d{6}|(?:2(?:3[2358]|4[2-4]|9[2-8])|45[3479]|54[2-467]|60[468]|72[236]|8(?:2[2-689]|3[23578]|4[3478]|5[2356])|9(?:1|2[2-8]|3[27-9]|4[2-6]|6[3569]|9[25-8]))[2-9]\\d{5,6}|58[126]\\d{7}","\\d{6,10}",,,"2123456789"]
-,[,,"3(?:0\\d|1[0-6]|2[0-5]|[34][0-7]|55|64)\\d{7}","\\d{10}",,,"3012345678"]
+,[,,"3(?:0\\d|1[0-6]|2[0-5]|3[0-7]|4[0-8]|55|64)\\d{7}","\\d{10}",,,"3012345678"]
 ,[,,"800\\d{5}","\\d{8}",,,"80012345"]
 ,[,,"900\\d{5}","\\d{8}",,,"90012345"]
 ,[,,"NA","NA"]
@@ -14271,18 +14485,18 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,,,[,,"NA","NA"]
 ]
 ,"PL":[,[,,"[12]\\d{6,8}|[3-57-9]\\d{8}|6\\d{5,8}","\\d{6,9}"]
-,[,,"(?:1[2-8]|2[2-59]|3[2-4]|4[1-468]|5[24-689]|6[1-3578]|7[14-7]|8[1-79]|9[145])\\d{7}|[12]2\\d{5}","\\d{6,9}",,,"123456789"]
+,[,,"(?:1[2-8]|2[2-69]|3[2-4]|4[1-468]|5[24-689]|6[1-3578]|7[14-7]|8[1-79]|9[145])\\d{7}|[12]2\\d{5}","\\d{6,9}",,,"123456789"]
 ,[,,"(?:5[0137]|6[069]|7[2389]|88)\\d{7}","\\d{9}",,,"512345678"]
 ,[,,"800\\d{6}","\\d{9}",,,"800123456"]
 ,[,,"70\\d{7}","\\d{9}",,,"701234567"]
 ,[,,"801\\d{6}","\\d{9}",,,"801234567"]
 ,[,,"NA","NA"]
 ,[,,"39\\d{7}","\\d{9}",,,"391234567"]
-,"PL",48,"00",,,,,,,,[[,"(\\d{2})(\\d{3})(\\d{2})(\\d{2})","$1 $2 $3 $4",["[124]|3[2-4]|5[24-689]|6[1-3578]|7[14-7]|8[1-79]|9[145]"]
+,"PL",48,"00",,,,,,,,[[,"(\\d{2})(\\d{3})(\\d{2})(\\d{2})","$1 $2 $3 $4",["[14]|2[0-57-9]|3[2-4]|5[24-689]|6[1-3578]|7[14-7]|8[1-79]|9[145]"]
 ,"","",0]
 ,[,"(\\d{2})(\\d{1})(\\d{4})","$1 $2 $3",["[12]2"]
 ,"","",0]
-,[,"(\\d{3})(\\d{3})(\\d{3})","$1 $2 $3",["39|5[0137]|6[0469]|7[02389]|8[08]"]
+,[,"(\\d{3})(\\d{3})(\\d{3})","$1 $2 $3",["26|39|5[0137]|6[0469]|7[02389]|8[08]"]
 ,"","",0]
 ,[,"(\\d{3})(\\d{2})(\\d{2,3})","$1 $2 $3",["64"]
 ,"","",0]
@@ -14344,11 +14558,11 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"PT":[,[,,"[2-46-9]\\d{8}","\\d{9}"]
 ,[,,"2(?:[12]\\d|[35][1-689]|4[1-59]|6[1-35689]|7[1-9]|8[1-69]|9[1256])\\d{6}","\\d{9}",,,"212345678"]
-,[,,"9(?:[136]\\d{2}|2[0-79]\\d|480)\\d{5}","\\d{9}",,,"912345678"]
+,[,,"9(?:[1236]\\d{2}|480)\\d{5}","\\d{9}",,,"912345678"]
 ,[,,"80[02]\\d{6}","\\d{9}",,,"800123456"]
-,[,,"76(?:0[1-57]|1[2-47]|2[237])\\d{5}","\\d{9}",,,"760123456"]
+,[,,"6(?:0[178]|4[68])\\d{6}|76(?:0[1-57]|1[2-47]|2[237])\\d{5}","\\d{9}",,,"760123456"]
 ,[,,"80(?:8\\d|9[1579])\\d{5}","\\d{9}",,,"808123456"]
-,[,,"884[128]\\d{5}","\\d{9}",,,"884123456"]
+,[,,"884[0-4689]\\d{5}","\\d{9}",,,"884123456"]
 ,[,,"30\\d{7}","\\d{9}",,,"301234567"]
 ,"PT",351,"00",,,,,,,,[[,"(2\\d)(\\d{3})(\\d{4})","$1 $2 $3",["2[12]"]
 ,"","",0]
@@ -14357,8 +14571,8 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,,[,,"NA","NA"]
 ,,,[,,"NA","NA"]
-,[,,"70(?:7\\d|8[17])\\d{5}","\\d{9}",,,"707123456"]
-,,,[,,"NA","NA"]
+,[,,"7(?:0(?:7\\d|8[17]))\\d{5}","\\d{9}",,,"707123456"]
+,,,[,,"600\\d{6}","\\d{9}",,,"600110000"]
 ]
 ,"PW":[,[,,"[2-8]\\d{6}","\\d{7}"]
 ,[,,"2552255|(?:277|345|488|5(?:35|44|87)|6(?:22|54|79)|7(?:33|47)|8(?:24|55|76))\\d{4}","\\d{7}",,,"2771234"]
@@ -14434,13 +14648,13 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"RO":[,[,,"2\\d{5,8}|[37-9]\\d{8}","\\d{6,9}"]
 ,[,,"2(?:1(?:\\d{7}|9\\d{3})|[3-6](?:\\d{7}|\\d9\\d{2}))|3[13-6]\\d{7}","\\d{6,9}",,,"211234567"]
-,[,,"7(?:000|[1-8]\\d{2}|99\\d)\\d{5}","\\d{9}",,,"712345678"]
+,[,,"7(?:[0-8]\\d{2}|99\\d)\\d{5}","\\d{9}",,,"712345678"]
 ,[,,"800\\d{6}","\\d{9}",,,"800123456"]
 ,[,,"90[036]\\d{6}","\\d{9}",,,"900123456"]
 ,[,,"801\\d{6}","\\d{9}",,,"801123456"]
 ,[,,"802\\d{6}","\\d{9}",,,"802123456"]
 ,[,,"NA","NA"]
-,"RO",40,"00","0"," int ",,"0",,,,[[,"([237]\\d)(\\d{3})(\\d{4})","$1 $2 $3",["[23]1"]
+,"RO",40,"00","0"," int ",,"0",,,,[[,"(\\d{2})(\\d{3})(\\d{4})","$1 $2 $3",["[23]1"]
 ,"0$1","",0]
 ,[,"(21)(\\d{4})","$1 $2",["21"]
 ,"0$1","",0]
@@ -14552,8 +14766,8 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,,,[,,"NA","NA"]
 ]
 ,"SB":[,[,,"[1-9]\\d{4,6}","\\d{5,7}"]
-,[,,"(?:1[4-79]|[23]\\d|4[01]|5[03]|6[0-37])\\d{3}","\\d{5}",,,"40123"]
-,[,,"48\\d{3}|7(?:[46-8]\\d|5[025-9]|9[0-4])\\d{4}|8[4-8]\\d{5}|9(?:1[2-9]|2[013-9]|3[0-2]|[46]\\d|5[0-46-9]|7[0-689]|8[0-79]|9[0-8])\\d{4}","\\d{5,7}",,,"7421234"]
+,[,,"(?:1[4-79]|[23]\\d|4[0-2]|5[03]|6[0-37])\\d{3}","\\d{5}",,,"40123"]
+,[,,"48\\d{3}|7(?:30|[46-8]\\d|5[025-9]|9[0-5])\\d{4}|8[4-8]\\d{5}|9(?:1[2-9]|2[013-9]|3[0-2]|[46]\\d|5[0-46-9]|7[0-689]|8[0-79]|9[0-8])\\d{4}","\\d{5,7}",,,"7421234"]
 ,[,,"1[38]\\d{3}","\\d{5}",,,"18123"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
@@ -14567,15 +14781,15 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,[,,"NA","NA"]
 ,,,[,,"NA","NA"]
 ]
-,"SC":[,[,,"[24689]\\d{5,6}","\\d{6,7}"]
+,"SC":[,[,,"[2468]\\d{5,6}","\\d{6,7}"]
 ,[,,"4[2-46]\\d{5}","\\d{7}",,,"4217123"]
 ,[,,"2[5-8]\\d{5}","\\d{7}",,,"2510123"]
 ,[,,"8000\\d{2}","\\d{6}",,,"800000"]
-,[,,"98\\d{4}","\\d{6}",,,"981234"]
+,[,,"NA","NA"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
 ,[,,"64\\d{5}","\\d{7}",,,"6412345"]
-,"SC",248,"0[0-2]",,,,,,"00",,[[,"(\\d{3})(\\d{3})","$1 $2",["[89]"]
+,"SC",248,"0[0-2]",,,,,,"00",,[[,"(\\d{3})(\\d{3})","$1 $2",["8"]
 ,"","",0]
 ,[,"(\\d)(\\d{3})(\\d{3})","$1 $2 $3",["[246]"]
 ,"","",0]
@@ -14587,7 +14801,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"SD":[,[,,"[19]\\d{8}","\\d{9}"]
 ,[,,"1(?:[125]\\d|8[3567])\\d{6}","\\d{9}",,,"121231234"]
-,[,,"9[012569]\\d{7}","\\d{9}",,,"911231234"]
+,[,,"9[0-3569]\\d{7}","\\d{9}",,,"911231234"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
@@ -14602,7 +14816,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"SE":[,[,,"[1-9]\\d{5,9}","\\d{5,10}"]
 ,[,,"1(?:0[1-8]\\d{6}|[136]\\d{5,7}|(?:2[0-35]|4[0-4]|5[0-25-9]|7[13-6]|[89]\\d)\\d{5,6})|2(?:[136]\\d{5,7}|(?:2[0-7]|4[0136-8]|5[0138]|7[018]|8[01]|9[0-57])\\d{5,6})|3(?:[356]\\d{5,7}|(?:0[0-4]|1\\d|2[0-25]|4[056]|7[0-2]|8[0-3]|9[023])\\d{5,6})|4(?:0[1-9]\\d{4,6}|[246]\\d{5,7}|(?:1[013-8]|3[0135]|5[14-79]|7[0-246-9]|8[0156]|9[0-689])\\d{5,6})|5(?:0[0-6]|[15][0-5]|2[0-68]|3[0-4]|4\\d|6[03-5]|7[013]|8[0-79]|9[01])\\d{5,6}|6(?:0[1-9]\\d{4,6}|3\\d{5,7}|(?:1[1-3]|2[0-4]|4[02-57]|5[0-37]|6[0-3]|7[0-2]|8[0247]|9[0-356])\\d{5,6})|8[1-9]\\d{5,7}|9(?:0[1-9]\\d{4,6}|(?:1[0-68]|2\\d|3[02-5]|4[0-3]|5[0-4]|[68][01]|7[0135-8])\\d{5,6})","\\d{5,9}",,,"8123456"]
-,[,,"7[0236]\\d{7}","\\d{9}",,,"701234567"]
+,[,,"7[02369]\\d{7}","\\d{9}",,,"701234567"]
 ,[,,"20(?:0(?:0\\d{2}|[1-9](?:0\\d{1,4}|[1-9]\\d{4}))|1(?:0\\d{4}|[1-9]\\d{4,5})|[2-9]\\d{5})","\\d{6,9}",,,"20123456"]
 ,[,,"9(?:00|39|44)(?:1(?:[0-26]\\d{5}|[3-57-9]\\d{2})|2(?:[0-2]\\d{5}|[3-9]\\d{2})|3(?:[0139]\\d{5}|[24-8]\\d{2})|4(?:[045]\\d{5}|[1-36-9]\\d{2})|5(?:5\\d{5}|[0-46-9]\\d{2})|6(?:[679]\\d{5}|[0-58]\\d{2})|7(?:[078]\\d{5}|[1-69]\\d{2})|8(?:[578]\\d{5}|[0-469]\\d{2}))","\\d{7}(?:\\d{3})?",,,"9001234567"]
 ,[,,"77(?:0(?:0\\d{2}|[1-9](?:0\\d|[1-9]\\d{4}))|[1-6][1-9]\\d{5})","\\d{6}(?:\\d{3})?",,,"771234567"]
@@ -14657,7 +14871,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"SG":[,[,,"[36]\\d{7}|[17-9]\\d{7,10}","\\d{8,11}"]
 ,[,,"6[1-9]\\d{6}","\\d{8}",,,"61234567"]
-,[,,"(?:8[1-7]|9[0-8])\\d{6}","\\d{8}",,,"81234567"]
+,[,,"(?:8[1-8]|9[0-8])\\d{6}","\\d{8}",,,"81234567"]
 ,[,,"1?800\\d{7}","\\d{10,11}",,,"18001234567"]
 ,[,,"1900\\d{7}","\\d{11}",,,"19001234567"]
 ,[,,"NA","NA"]
@@ -14677,14 +14891,14 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,[,,"7000\\d{7}","\\d{11}",,,"70001234567"]
 ,,,[,,"NA","NA"]
 ]
-,"SH":[,[,,"[2-79]\\d{3,4}","\\d{4,5}"]
-,[,,"2(?:[0-57-9]\\d|6[4-9])\\d{2}|(?:[2-46]\\d|7[01])\\d{2}","\\d{4,5}",,,"2158"]
+,"SH":[,[,,"[256]\\d{4}","\\d{4,5}"]
+,[,,"2(?:[0-57-9]\\d|6[4-9])\\d{2}","\\d{5}",,,"22158"]
+,[,,"[56]\\d{4}","\\d{5}"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
-,[,,"(?:[59]\\d|7[2-9])\\d{2}","\\d{4,5}",,,"5012"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
-,[,,"NA","NA"]
+,[,,"262\\d{2}","\\d{5}"]
 ,"SH",290,"00",,,,,,,,,,[,,"NA","NA"]
 ,1,,[,,"NA","NA"]
 ,[,,"NA","NA"]
@@ -14745,9 +14959,9 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,[,,"96\\d{7}","\\d{9}",,,"961234567"]
 ,,,[,,"NA","NA"]
 ]
-,"SL":[,[,,"[2-578]\\d{7}","\\d{6,8}"]
+,"SL":[,[,,"[2-9]\\d{7}","\\d{6,8}"]
 ,[,,"[235]2[2-4][2-9]\\d{4}","\\d{6,8}",,,"22221234"]
-,[,,"(?:2[15]|3[034]|4[04]|5[05]|7[6-9]|88)\\d{6}","\\d{6,8}",,,"25123456"]
+,[,,"(?:2[15]|3[03-5]|4[04]|5[05]|66|7[6-9]|88|99)\\d{6}","\\d{6,8}",,,"25123456"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
@@ -14807,7 +15021,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"SO":[,[,,"[1-79]\\d{6,8}","\\d{7,9}"]
 ,[,,"(?:1\\d|2[0-79]|3[0-46-8]|4[0-7]|59)\\d{5}","\\d{7}",,,"4012345"]
-,[,,"(?:15\\d|2(?:4\\d|8)|6[137-9]?\\d{2}|7[1-9]\\d|907\\d)\\d{5}","\\d{7,9}",,,"71123456"]
+,[,,"(?:15\\d|2(?:4\\d|8)|6[1-35-9]?\\d{2}|7(?:[1-8]\\d|99?\\d)|9(?:07|[2-9])\\d)\\d{5}","\\d{7,9}",,,"71123456"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
@@ -14817,9 +15031,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,"","",0]
 ,[,"(\\d)(\\d{7})","$1 $2",["24|[67]"]
 ,"","",0]
-,[,"(\\d{2})(\\d{5,7})","$1 $2",["15|28|6[1378]"]
-,"","",0]
-,[,"(69\\d)(\\d{6})","$1 $2",["69"]
+,[,"(\\d{2})(\\d{5,7})","$1 $2",["15|28|6[1-35-9]|799|9[2-9]"]
 ,"","",0]
 ,[,"(90\\d)(\\d{3})(\\d{3})","$1 $2 $3",["90"]
 ,"","",0]
@@ -14866,7 +15078,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"ST":[,[,,"[29]\\d{6}","\\d{7}"]
 ,[,,"22\\d{5}","\\d{7}",,,"2221234"]
-,[,,"9[89]\\d{5}","\\d{7}",,,"9812345"]
+,[,,"9(?:0(?:0[5-9]|[1-9]\\d)|[89]\\d{2})\\d{3}","\\d{7}",,,"9812345"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
@@ -14931,7 +15143,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,,,[,,"NA","NA"]
 ]
 ,"SZ":[,[,,"[027]\\d{7}","\\d{8}"]
-,[,,"2(?:2(?:0[07]|[13]7|2[57])|3(?:0[34]|[1278]3|3[23]|[46][34])|(?:40[4-69]|67)|5(?:0[5-7]|1[6-9]|[23][78]|48|5[01]))\\d{4}","\\d{8}",,,"22171234"]
+,[,,"2[2-5]\\d{6}","\\d{8}",,,"22171234"]
 ,[,,"7[6-8]\\d{6}","\\d{8}",,,"76123456"]
 ,[,,"0800\\d{4}","\\d{8}",,,"08001234"]
 ,[,,"NA","NA"]
@@ -14974,7 +15186,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"TD":[,[,,"[2679]\\d{7}","\\d{8}"]
 ,[,,"22(?:[3789]0|5[0-5]|6[89])\\d{4}","\\d{8}",,,"22501234"]
-,[,,"(?:6[02368]\\d|77\\d|9(?:5[0-4]|9\\d))\\d{5}","\\d{8}",,,"63012345"]
+,[,,"(?:6[02368]\\d|77\\d|9\\d{2})\\d{5}","\\d{8}",,,"63012345"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
@@ -15077,7 +15289,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"TM":[,[,,"[1-6]\\d{7}","\\d{8}"]
 ,[,,"(?:1(?:2\\d|3[1-9])|2(?:22|4[0-35-8])|3(?:22|4[03-9])|4(?:22|3[128]|4\\d|6[15])|5(?:22|5[7-9]|6[014-689]))\\d{5}","\\d{8}",,,"12345678"]
-,[,,"6[2-8]\\d{6}","\\d{8}",,,"66123456"]
+,[,,"6[2-9]\\d{6}","\\d{8}",,,"66123456"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
@@ -15151,8 +15363,8 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,,,[,,"NA","NA"]
 ]
 ,"TT":[,[,,"[589]\\d{9}","\\d{7}(?:\\d{3})?"]
-,[,,"868(?:2(?:[03]1|2[1-5])|6(?:0[79]|1[02-9]|2[1-9]|[3-69]\\d|7[0-79])|82[124])\\d{4}","\\d{7}(?:\\d{3})?",,,"8682211234"]
-,[,,"868(?:2(?:[89]\\d)|3(?:0[1-9]|1[02-9]|[2-9]\\d)|4[6-9]\\d|6(?:20|78|8\\d)|7(?:0[1-9]|1[02-9]|[2-9]\\d))\\d{4}","\\d{10}",,,"8682911234"]
+,[,,"868(?:2(?:01|2[1-6]|3[1-5])|6(?:0[79]|1[02-8]|2[1-9]|[3-69]\\d|7[0-79])|82[124])\\d{4}","\\d{7}(?:\\d{3})?",,,"8682211234"]
+,[,,"868(?:2(?:[789]\\d)|3(?:0[1-9]|1[02-9]|[2-9]\\d)|4[6-9]\\d|6(?:20|78|8\\d)|7(?:0[1-9]|1[02-9]|[2-9]\\d))\\d{4}","\\d{10}",,,"8682911234"]
 ,[,,"8(?:00|44|55|66|77|88)[2-9]\\d{6}","\\d{10}",,,"8002345678"]
 ,[,,"900[2-9]\\d{6}","\\d{10}",,,"9002345678"]
 ,[,,"NA","NA"]
@@ -15161,7 +15373,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,"TT",1,"011","1",,,"1",,,,,,[,,"NA","NA"]
 ,,"868",[,,"NA","NA"]
 ,[,,"NA","NA"]
-,,,[,,"NA","NA"]
+,,,[,,"868619\\d{4}","\\d{10}"]
 ]
 ,"TV":[,[,,"[29]\\d{4,5}","\\d{5,6}"]
 ,[,,"2[02-9]\\d{3}","\\d{5}",,,"20123"]
@@ -15198,7 +15410,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"TZ":[,[,,"\\d{9}","\\d{7,9}"]
 ,[,,"2[2-8]\\d{7}","\\d{7,9}",,,"222345678"]
-,[,,"(?:6[1578]|7[1-9])\\d{7}","\\d{9}",,,"612345678"]
+,[,,"(?:6[25-8]|7[13-9])\\d{7}","\\d{9}",,,"621234567"]
 ,[,,"80[08]\\d{6}","\\d{9}",,,"800123456"]
 ,[,,"90\\d{7}","\\d{9}",,,"900123456"]
 ,[,,"8(?:40|6[01])\\d{6}","\\d{9}",,,"840123456"]
@@ -15216,15 +15428,15 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,[,,"NA","NA"]
 ,,,[,,"NA","NA"]
 ]
-,"UA":[,[,,"[3-689]\\d{8}","\\d{5,9}"]
+,"UA":[,[,,"[3-9]\\d{8}","\\d{5,9}"]
 ,[,,"(?:3[1-8]|4[13-8]|5[1-7]|6[12459])\\d{7}","\\d{5,9}",,,"311234567"]
-,[,,"(?:39|50|6[36-8]|9[1-9])\\d{7}","\\d{9}",,,"391234567"]
+,[,,"(?:39|50|6[36-8]|73|9[1-9])\\d{7}","\\d{9}",,,"391234567"]
 ,[,,"800\\d{6}","\\d{9}",,,"800123456"]
 ,[,,"900\\d{6}","\\d{9}",,,"900123456"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
 ,[,,"89\\d{7}","\\d{9}",,,"891234567"]
-,"UA",380,"00","0",,,"0",,"0~0",,[[,"([3-689]\\d)(\\d{3})(\\d{4})","$1 $2 $3",["[38]9|4(?:[45][0-5]|87)|5(?:0|6[37]|7[37])|6[36-8]|9[1-9]","[38]9|4(?:[45][0-5]|87)|5(?:0|6(?:3[14-7]|7)|7[37])|6[36-8]|9[1-9]"]
+,"UA",380,"00","0",,,"0",,"0~0",,[[,"([3-9]\\d)(\\d{3})(\\d{4})","$1 $2 $3",["[38]9|4(?:[45][0-5]|87)|5(?:0|6[37]|7[37])|6[36-8]|73|9[1-9]","[38]9|4(?:[45][0-5]|87)|5(?:0|6(?:3[14-7]|7)|7[37])|6[36-8]|73|9[1-9]"]
 ,"0$1","",0]
 ,[,"([3-689]\\d{2})(\\d{3})(\\d{3})","$1 $2 $3",["3[1-8]2|4[13678]2|5(?:[12457]2|6[24])|6(?:[49]2|[12][29]|5[24])|8[0-8]|90","3(?:[1-46-8]2[013-9]|52)|4(?:[1378]2|62[013-9])|5(?:[12457]2|6[24])|6(?:[49]2|[12][29]|5[24])|8[0-8]|90"]
 ,"0$1","",0]
@@ -15257,8 +15469,8 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,,,[,,"NA","NA"]
 ]
 ,"US":[,[,,"[2-9]\\d{9}","\\d{7}(?:\\d{3})?"]
-,[,,"(?:2(?:0[1-35-9]|1[02-9]|2[4589]|3[149]|4[08]|5[1-46]|6[0279]|7[026]|8[13])|3(?:0[1-57-9]|1[02-9]|2[0135]|3[014679]|4[67]|5[12]|6[014]|8[56])|4(?:0[124-9]|1[02-579]|2[3-5]|3[0245]|4[0235]|58|69|7[0589]|8[04])|5(?:0[1-57-9]|1[0235-8]|20|3[0149]|4[01]|5[19]|6[1-37]|7[013-5]|8[056])|6(?:0[1-35-9]|1[024-9]|2[036]|3[016]|4[16]|5[017]|6[0-279]|78|8[12])|7(?:0[1-46-8]|1[02-9]|2[0457]|3[1247]|4[07]|5[47]|6[02359]|7[02-59]|8[156])|8(?:0[1-68]|1[02-8]|28|3[0-25]|4[3578]|5[06-9]|6[02-5]|7[028])|9(?:0[1346-9]|1[02-9]|2[0589]|3[01678]|4[0179]|5[12469]|7[0-3589]|8[0459]))[2-9]\\d{6}","\\d{7}(?:\\d{3})?",,,"2015555555"]
-,[,,"(?:2(?:0[1-35-9]|1[02-9]|2[4589]|3[149]|4[08]|5[1-46]|6[0279]|7[026]|8[13])|3(?:0[1-57-9]|1[02-9]|2[0135]|3[014679]|4[67]|5[12]|6[014]|8[56])|4(?:0[124-9]|1[02-579]|2[3-5]|3[0245]|4[0235]|58|69|7[0589]|8[04])|5(?:0[1-57-9]|1[0235-8]|20|3[0149]|4[01]|5[19]|6[1-37]|7[013-5]|8[056])|6(?:0[1-35-9]|1[024-9]|2[036]|3[016]|4[16]|5[017]|6[0-279]|78|8[12])|7(?:0[1-46-8]|1[02-9]|2[0457]|3[1247]|4[07]|5[47]|6[02359]|7[02-59]|8[156])|8(?:0[1-68]|1[02-8]|28|3[0-25]|4[3578]|5[06-9]|6[02-5]|7[028])|9(?:0[1346-9]|1[02-9]|2[0589]|3[01678]|4[0179]|5[12469]|7[0-3589]|8[0459]))[2-9]\\d{6}","\\d{7}(?:\\d{3})?",,,"2015555555"]
+,[,,"(?:2(?:0[1-35-9]|1[02-9]|2[04589]|3[149]|4[08]|5[1-46]|6[0279]|7[026]|8[13])|3(?:0[1-57-9]|1[02-9]|2[0135]|3[014679]|4[67]|5[12]|6[014]|8[56])|4(?:0[124-9]|1[02-579]|2[3-5]|3[0245]|4[0235]|58|69|7[0589]|8[04])|5(?:0[1-57-9]|1[0235-8]|20|3[0149]|4[01]|5[19]|6[1-37]|7[013-5]|8[056])|6(?:0[1-35-9]|1[024-9]|2[03689]|3[016]|4[16]|5[017]|6[0-279]|78|8[12])|7(?:0[1-46-8]|1[02-9]|2[0457]|3[1247]|4[07]|5[47]|6[02359]|7[02-59]|8[156])|8(?:0[1-68]|1[02-8]|28|3[0-25]|4[3578]|5[046-9]|6[02-5]|7[028])|9(?:0[1346-9]|1[02-9]|2[0589]|3[01678]|4[0179]|5[12469]|7[0-3589]|8[0459]))[2-9]\\d{6}","\\d{7}(?:\\d{3})?",,,"2015555555"]
+,[,,"(?:2(?:0[1-35-9]|1[02-9]|2[04589]|3[149]|4[08]|5[1-46]|6[0279]|7[026]|8[13])|3(?:0[1-57-9]|1[02-9]|2[0135]|3[014679]|4[67]|5[12]|6[014]|8[56])|4(?:0[124-9]|1[02-579]|2[3-5]|3[0245]|4[0235]|58|69|7[0589]|8[04])|5(?:0[1-57-9]|1[0235-8]|20|3[0149]|4[01]|5[19]|6[1-37]|7[013-5]|8[056])|6(?:0[1-35-9]|1[024-9]|2[03689]|3[016]|4[16]|5[017]|6[0-279]|78|8[12])|7(?:0[1-46-8]|1[02-9]|2[0457]|3[1247]|4[07]|5[47]|6[02359]|7[02-59]|8[156])|8(?:0[1-68]|1[02-8]|28|3[0-25]|4[3578]|5[046-9]|6[02-5]|7[028])|9(?:0[1346-9]|1[02-9]|2[0589]|3[01678]|4[0179]|5[12469]|7[0-3589]|8[0459]))[2-9]\\d{6}","\\d{7}(?:\\d{3})?",,,"2015555555"]
 ,[,,"8(?:00|44|55|66|77|88)[2-9]\\d{6}","\\d{10}",,,"8002345678"]
 ,[,,"900[2-9]\\d{6}","\\d{10}",,,"9002345678"]
 ,[,,"NA","NA"]
@@ -15309,18 +15521,16 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,[,,"NA","NA"]
 ,,,[,,"NA","NA"]
 ]
-,"VA":[,[,,"06\\d{8}","\\d{10}"]
+,"VA":[,[,,"(?:0(?:878\\d{5}|6698\\d{5})|[1589]\\d{5,10}|3(?:[12457-9]\\d{8}|[36]\\d{7,9}))","\\d{6,11}"]
 ,[,,"06698\\d{5}","\\d{10}",,,"0669812345"]
-,[,,"NA","NA"]
-,[,,"NA","NA"]
-,[,,"NA","NA"]
-,[,,"NA","NA"]
-,[,,"NA","NA"]
-,[,,"NA","NA"]
-,"VA",379,"00",,,,,,,,[[,"(06)(\\d{4})(\\d{4})","$1 $2 $3",,"","",0]
-]
-,,[,,"NA","NA"]
-,,,[,,"NA","NA"]
+,[,,"3(?:[12457-9]\\d{8}|6\\d{7,8}|3\\d{7,9})","\\d{9,11}",,,"3123456789"]
+,[,,"80(?:0\\d{6}|3\\d{3})","\\d{6,9}",,,"800123456"]
+,[,,"0878\\d{5}|1(?:44|6[346])\\d{6}|89(?:2\\d{3}|4(?:[0-4]\\d{2}|[5-9]\\d{4})|5(?:[0-4]\\d{2}|[5-9]\\d{6})|9\\d{6})","\\d{6,10}",,,"899123456"]
+,[,,"84(?:[08]\\d{6}|[17]\\d{3})","\\d{6,9}",,,"848123456"]
+,[,,"1(?:78\\d|99)\\d{6}","\\d{9,10}",,,"1781234567"]
+,[,,"55\\d{8}","\\d{10}",,,"5512345678"]
+,"VA",39,"00",,,,,,,,,,[,,"NA","NA"]
+,,,[,,"848\\d{6}","\\d{9}",,,"848123456"]
 ,[,,"NA","NA"]
 ,1,,[,,"NA","NA"]
 ]
@@ -15412,7 +15622,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ]
 ,"VU":[,[,,"[2-57-9]\\d{4,6}","\\d{5,7}"]
 ,[,,"(?:2[02-9]\\d|3(?:[5-7]\\d|8[0-8])|48[4-9]|88\\d)\\d{2}","\\d{5}",,,"22123"]
-,[,,"(?:5(?:7[2-5]|[3-69]\\d)|7[013-7]\\d)\\d{4}","\\d{7}",,,"5912345"]
+,[,,"(?:5(?:7[2-5]|[0-689]\\d)|7[013-7]\\d)\\d{4}","\\d{7}",,,"5912345"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
@@ -15453,6 +15663,8 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,"","",0]
 ,[,"(7\\d)(\\d{5})","$1 $2",["7"]
 ,"","",0]
+,[,"(\\d{5})","$1",["[2-6]"]
+,"","",0]
 ]
 ,,[,,"NA","NA"]
 ,,,[,,"NA","NA"]
@@ -15478,7 +15690,7 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,,,[,,"NA","NA"]
 ]
 ,"YT":[,[,,"[268]\\d{8}","\\d{9}"]
-,[,,"2696[0-4]\\d{4}","\\d{9}",,,"269601234"]
+,[,,"269(?:6[0-4]|50)\\d{4}","\\d{9}",,,"269601234"]
 ,[,,"639\\d{6}","\\d{9}",,,"639123456"]
 ,[,,"80\\d{7}","\\d{9}",,,"801234567"]
 ,[,,"NA","NA"]
@@ -15530,33 +15742,33 @@ i18n.phonenumbers.metadata.countryToMetadata = {
 ,[,,"NA","NA"]
 ,,,[,,"NA","NA"]
 ]
-,"ZW":[,[,,"2(?:[012457-9]\\d{3,8}|6\\d{3,6})|[13-79]\\d{4,8}|8[06]\\d{8}","\\d{3,10}"]
-,[,,"(?:1[3-9]|2(?:0[45]|[16]|2[28]|[49]8?|58[23]|7[246]|8[1346-9])|3(?:08?|17?|3[78]|[2456]|7[1569]|8[379])|5(?:[07-9]|1[78]|483|5(?:7?|8))|6(?:0|28|37?|[45][68][78]|98?)|848)\\d{3,6}|(?:2(?:27|5|7[135789]|8[25])|3[39]|5[1-46]|6[126-8])\\d{4,6}|2(?:(?:0|70)\\d{5,6}|2[05]\\d{7})|(?:4\\d|9[2-8])\\d{4,7}","\\d{3,10}",,,"1312345"]
-,[,,"7[1378]\\d{7}|86(?:22|44)\\d{6}","\\d{9,10}",,,"711234567"]
+,"ZW":[,[,,"2(?:[012457-9]\\d{3,8}|6(?:[14]\\d{7}|\\d{4}))|[13-79]\\d{4,9}|8[06]\\d{8}","\\d{3,10}"]
+,[,,"(?:2(?:0(?:4\\d|5\\d{2})|2[278]\\d|48\\d|7(?:[1-7]\\d|[089]\\d{2})|8(?:[2-57-9]|[146]\\d{2})|98)|3(?:08|17|3[78]|7(?:[19]|[56]\\d)|8[37]|98)|5[15][78]|6(?:28\\d{2}|[36]7|75\\d|[69]8|8(?:7\\d|8)))\\d{3}|(?:2(?:1[39]|2[0157]|6[14]|7[35]|84)|329)\\d{7}|(?:1(?:3\\d{2}|9\\d|[4-8])|2(?:0\\d{2}|[569]\\d)|3(?:[26]|[013459]\\d)|5(?:0|5\\d{2}|[689]\\d)|6(?:[39]|[01246]\\d|[78]\\d{2}))\\d{3}|(?:29\\d|39|54)\\d{6}|(?:(?:25|54)83|2582\\d)\\d{3}|(?:4\\d{6,7}|9[2-9]\\d{4,5})","\\d{3,10}",,,"1312345"]
+,[,,"7[1378]\\d{7}","\\d{9}",,,"711234567"]
 ,[,,"800\\d{7}","\\d{10}",,,"8001234567"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
 ,[,,"NA","NA"]
-,[,,"86(?:1[12]|30|55|77|8[367]|99)\\d{6}","\\d{10}",,,"8686123456"]
-,"ZW",263,"00","0",,,"0",,,,[[,"([49])(\\d{3})(\\d{2,5})","$1 $2 $3",["4|9[2-9]"]
+,[,,"86(?:1[12]|30|44|55|77|8[367]|99)\\d{6}","\\d{10}",,,"8686123456"]
+,"ZW",263,"00","0",,,"0",,,,[[,"([49])(\\d{3})(\\d{2,4})","$1 $2 $3",["4|9[2-9]"]
 ,"0$1","",0]
-,[,"([179]\\d)(\\d{3})(\\d{3,4})","$1 $2 $3",["[19]1|7"]
+,[,"(7\\d)(\\d{3})(\\d{3,4})","$1 $2 $3",["7"]
 ,"0$1","",0]
 ,[,"(86\\d{2})(\\d{3})(\\d{3})","$1 $2 $3",["86[24]"]
 ,"0$1","",0]
-,[,"([2356]\\d{2})(\\d{3,5})","$1 $2",["2(?:[278]|0[45]|[49]8)|3(?:08|17|3[78]|[78])|5[15][78]|6(?:[29]8|37|[68][78])"]
+,[,"([2356]\\d{2})(\\d{3,5})","$1 $2",["2(?:0[45]|2[278]|[49]8|[78])|3(?:08|17|3[78]|7[1569]|8[37]|98)|5[15][78]|6(?:[29]8|[38]7|6[78]|75|[89]8)"]
 ,"0$1","",0]
-,[,"(\\d{3})(\\d{3})(\\d{3,4})","$1 $2 $3",["2(?:[278]|0[45]|48)|3(?:08|17|3[78]|[78])|5[15][78]|6(?:[29]8|37|[68][78])|80"]
+,[,"(\\d{3})(\\d{3})(\\d{3,4})","$1 $2 $3",["2(?:1[39]|2[0157]|6[14]|7[35]|84)|329"]
 ,"0$1","",0]
-,[,"([1-356]\\d)(\\d{3,5})","$1 $2",["1[3-9]|2(?:[1-469]|0[0-35-9]|[45][0-79])|3(?:0[0-79]|1[0-689]|[24-69]|3[0-69])|5(?:[02-46-9]|[15][0-69])|6(?:[0145]|[29][0-79]|3[0-689]|[68][0-69])"]
+,[,"([1-356]\\d)(\\d{3,5})","$1 $2",["1[3-9]|2[0569]|3[0-69]|5[05689]|6[0-46-9]"]
 ,"0$1","",0]
-,[,"([1-356]\\d)(\\d{3})(\\d{3})","$1 $2 $3",["1[3-9]|2(?:[1-469]|0[0-35-9]|[45][0-79])|3(?:0[0-79]|1[0-689]|[24-69]|3[0-69])|5(?:[02-46-9]|[15][0-69])|6(?:[0145]|[29][0-79]|3[0-689]|[68][0-69])"]
+,[,"([235]\\d)(\\d{3})(\\d{3,4})","$1 $2 $3",["[23]9|54"]
 ,"0$1","",0]
 ,[,"([25]\\d{3})(\\d{3,5})","$1 $2",["(?:25|54)8","258[23]|5483"]
 ,"0$1","",0]
-,[,"([25]\\d{3})(\\d{3})(\\d{3})","$1 $2 $3",["(?:25|54)8","258[23]|5483"]
-,"0$1","",0]
 ,[,"(8\\d{3})(\\d{6})","$1 $2",["86"]
+,"0$1","",0]
+,[,"(80\\d)(\\d{3})(\\d{4})","$1 $2 $3",["80"]
 ,"0$1","",0]
 ]
 ,,[,,"NA","NA"]
@@ -15757,7 +15969,7 @@ goog.require('goog.proto2.Message');
  * @extends {goog.proto2.Message}
  */
 i18n.phonenumbers.PhoneNumber = function() {
-  goog.proto2.Message.apply(this);
+  goog.proto2.Message.call(this);
 };
 goog.inherits(i18n.phonenumbers.PhoneNumber, goog.proto2.Message);
 
@@ -16190,56 +16402,72 @@ i18n.phonenumbers.PhoneNumber.CountryCodeSource = {
 };
 
 
-goog.proto2.Message.set$Metadata(i18n.phonenumbers.PhoneNumber, {
-  0: {
-    name: 'PhoneNumber',
-    fullName: 'i18n.phonenumbers.PhoneNumber'
-  },
-  1: {
-    name: 'country_code',
-    required: true,
-    fieldType: goog.proto2.Message.FieldType.INT32,
-    type: Number
-  },
-  2: {
-    name: 'national_number',
-    required: true,
-    fieldType: goog.proto2.Message.FieldType.UINT64,
-    type: Number
-  },
-  3: {
-    name: 'extension',
-    fieldType: goog.proto2.Message.FieldType.STRING,
-    type: String
-  },
-  4: {
-    name: 'italian_leading_zero',
-    fieldType: goog.proto2.Message.FieldType.BOOL,
-    type: Boolean
-  },
-  8: {
-    name: 'number_of_leading_zeros',
-    fieldType: goog.proto2.Message.FieldType.INT32,
-    defaultValue: 1,
-    type: Number
-  },
-  5: {
-    name: 'raw_input',
-    fieldType: goog.proto2.Message.FieldType.STRING,
-    type: String
-  },
-  6: {
-    name: 'country_code_source',
-    fieldType: goog.proto2.Message.FieldType.ENUM,
-    defaultValue: i18n.phonenumbers.PhoneNumber.CountryCodeSource.FROM_NUMBER_WITH_PLUS_SIGN,
-    type: i18n.phonenumbers.PhoneNumber.CountryCodeSource
-  },
-  7: {
-    name: 'preferred_domestic_carrier_code',
-    fieldType: goog.proto2.Message.FieldType.STRING,
-    type: String
+/** @override */
+i18n.phonenumbers.PhoneNumber.prototype.getDescriptor = function() {
+  if (!i18n.phonenumbers.PhoneNumber.descriptor_) {
+    // The descriptor is created lazily when we instantiate a new instance.
+    var descriptorObj = {
+      0: {
+        name: 'PhoneNumber',
+        fullName: 'i18n.phonenumbers.PhoneNumber'
+      },
+      1: {
+        name: 'country_code',
+        required: true,
+        fieldType: goog.proto2.Message.FieldType.INT32,
+        type: Number
+      },
+      2: {
+        name: 'national_number',
+        required: true,
+        fieldType: goog.proto2.Message.FieldType.UINT64,
+        type: Number
+      },
+      3: {
+        name: 'extension',
+        fieldType: goog.proto2.Message.FieldType.STRING,
+        type: String
+      },
+      4: {
+        name: 'italian_leading_zero',
+        fieldType: goog.proto2.Message.FieldType.BOOL,
+        type: Boolean
+      },
+      8: {
+        name: 'number_of_leading_zeros',
+        fieldType: goog.proto2.Message.FieldType.INT32,
+        defaultValue: 1,
+        type: Number
+      },
+      5: {
+        name: 'raw_input',
+        fieldType: goog.proto2.Message.FieldType.STRING,
+        type: String
+      },
+      6: {
+        name: 'country_code_source',
+        fieldType: goog.proto2.Message.FieldType.ENUM,
+        defaultValue: i18n.phonenumbers.PhoneNumber.CountryCodeSource.FROM_NUMBER_WITH_PLUS_SIGN,
+        type: i18n.phonenumbers.PhoneNumber.CountryCodeSource
+      },
+      7: {
+        name: 'preferred_domestic_carrier_code',
+        fieldType: goog.proto2.Message.FieldType.STRING,
+        type: String
+      }
+    };
+    i18n.phonenumbers.PhoneNumber.descriptor_ =
+        goog.proto2.Message.createDescriptor(
+             i18n.phonenumbers.PhoneNumber, descriptorObj);
   }
-});
+  return i18n.phonenumbers.PhoneNumber.descriptor_;
+};
+
+
+// Export getDescriptor static function robust to minification.
+i18n.phonenumbers.PhoneNumber['ctor'] = i18n.phonenumbers.PhoneNumber;
+i18n.phonenumbers.PhoneNumber['ctor'].getDescriptor =
+    i18n.phonenumbers.PhoneNumber.prototype.getDescriptor;
 
 // Copyright 2008 The Closure Library Authors. All Rights Reserved.
 //
@@ -20931,11 +21159,11 @@ i18n.phonenumbers.PhoneNumberUtil.matchesEntirely_ = function(regex, str) {
       }
     };
     complete = function(phone_obj) {
-      var formatted, _ref, _ref1;
+      var formatted, ref, ref1;
       if (phone_obj) {
         formatted = inst.format(phone_obj, e164);
-        cc = "" + ((_ref = phone_obj.getCountryCode()) != null ? _ref : "");
-        ndc = ("" + ((_ref1 = inst.getNationalSignificantNumber(phone_obj)) != null ? _ref1 : "")).substring(0, inst.getLengthOfNationalDestinationCode(phone_obj));
+        cc = "" + ((ref = phone_obj.getCountryCode()) != null ? ref : "");
+        ndc = ("" + ((ref1 = inst.getNationalSignificantNumber(phone_obj)) != null ? ref1 : "")).substring(0, inst.getLengthOfNationalDestinationCode(phone_obj));
         return [formatted, cc, ndc];
       } else {
         return [];
